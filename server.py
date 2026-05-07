@@ -14,7 +14,10 @@ import tempfile
 
 logging.basicConfig(level=logging.INFO)
 
-app = Flask(__name__, static_folder="webapp", static_url_path="")
+# webapp/ — локально, корень репозитория — на Render
+import os as _os
+_static = "webapp" if _os.path.isdir("webapp") else "."
+app = Flask(__name__, static_folder=_static, static_url_path="")
 CORS(app)
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -53,7 +56,7 @@ def get_loyalty(total: int):
 
 @app.route("/")
 def index():
-    return send_from_directory("webapp", "index.html")
+    return send_from_directory(_static, "index.html")
 
 @app.route("/api/products")
 def get_products():

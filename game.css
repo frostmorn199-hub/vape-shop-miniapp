@@ -243,11 +243,14 @@ body {
 .game-screen {
   padding: 0 !important;
   justify-content: flex-start !important;
+  align-items: flex-start !important;
 }
 
 #gameCanvas {
   display: block;
   touch-action: none;
+  position: fixed;
+  top: 0; left: 0;
 }
 
 #hud {
@@ -258,17 +261,17 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
-  background: rgba(7,7,26,0.7);
-  backdrop-filter: blur(6px);
+  background: linear-gradient(180deg, rgba(5,5,26,0.92) 0%, rgba(5,5,26,0) 100%);
+  backdrop-filter: blur(4px);
 }
 
-#hud-title { font-size: 14px; font-weight: 700; color: rgba(255,255,255,0.6); }
-#hud-score { font-size: 22px; font-weight: 900; color: #ffbe00; }
+#hud-title { font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.45); letter-spacing: 1px; }
+#hud-score { font-size: 26px; font-weight: 900; color: #ffbe00; text-shadow: 0 0 20px rgba(255,190,0,0.6); }
 
 #pause-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7,7,26,0.85);
+  background: rgba(5,5,26,0.88);
   display: flex;
   flex-direction: column;
   align-items: center;

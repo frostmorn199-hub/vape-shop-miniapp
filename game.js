@@ -208,11 +208,11 @@ function setupDims() {
   W          = canvas.width  = window.innerWidth;
   H          = canvas.height = window.innerHeight;
   VPX        = W / 2;
-  VPY        = H * 0.20;           // точка схода (горизонт)
-  GROUND_Y   = H * 0.78;           // Y игрока
-  ROAD_BOT_Y = H * 1.05;
-  // X центров полос у основания экрана
-  LANE_BOT   = [W * 0.20, W * 0.50, W * 0.80];
+  VPY        = H * 0.26;           // горизонт ниже → дорога шире
+  GROUND_Y   = H * 0.80;           // Y игрока
+  ROAD_BOT_Y = H * 1.08;
+  // Широкое расположение полос (было 20/50/80, теперь 12/50/88)
+  LANE_BOT   = [W * 0.12, W * 0.50, W * 0.88];
 }
 
 /** Экранный X для полосы lane на высоте y */
@@ -227,7 +227,7 @@ function scaleAtY(y) {
 }
 
 // ─── Состояние игры ─────────────────────────────────────
-let canvas, ctx, charImg;
+let canvas, ctx;
 let score, speed, playerLane, targetLane, playerX;
 let obstacles, particles, roadOffset, frameCount;
 let animFrame, gameActive;
@@ -238,12 +238,9 @@ function startGame() {
   ctx    = canvas.getContext('2d');
   setupDims();
 
-  if (!charImg) {
-    charImg     = new Image();
-    charImg.src = 'assets/character.jpg';
-  }
+  // processedChar загружается заранее — ничего делать не нужно
 
-  score      = 0; speed = 4.5;
+  score      = 0; speed = 3.0;   // старт медленнее
   playerLane = 1; targetLane = 1;
   playerX    = LANE_BOT[1];
   obstacles  = []; particles = [];
@@ -283,17 +280,21 @@ function loop() {
   score++;
   document.getElementById('hud-score').textContent = score;
 
-  // Ускорение каждые 300 кадров
-  if (frameCount % 300 === 0) speed = Math.min(speed + 0.5, 16);
+  // Плавное ускорение каждые 400 кадров (~6 сек при 60fps)
+  if (frameCount % 400 === 0) speed = Math.min(speed + 0.35, 14);
 
   // Плавный переход между полосами
-  playerX += (LANE_BOT[targetLane] - playerX) * 0.14;
+  playerX += (LANE_BOT[targetLane] - playerX) * 0.17;
 
-  // Спавн препятствий
-  const rate = Math.max(45, 140 - Math.floor(speed * 8));
+  // Спавн препятствий — плавный и предсказуемый
+  const rate = Math.max(50, 160 - Math.floor(speed * 9));
   if (frameCount % rate === 0) {
     const lane = Math.floor(Math.random() * LANES);
-    obstacles.push({ lane, y: VPY + 10 });
+    // Никогда не спавним 2 препятствия подряд на той же полосе близко
+    const recent = obstacles.filter(o => o.lane === lane && o.y < VPY + H * 0.3);
+    if (recent.length === 0) {
+      obstacles.push({ lane, y: VPY + 10 });
+    }
   }
 
   // Движение препятствий (нелинейное: ускоряются при приближении)
@@ -409,8 +410,8 @@ function drawRoad() {
   ctx.fillStyle = road;
   ctx.beginPath();
   ctx.moveTo(VPX, VPY);
-  ctx.lineTo(0, H);
-  ctx.lineTo(W, H);
+  ctx.lineTo(-W * 0.08, H);   // немного за левый край
+  ctx.lineTo(W * 1.08, H);    // немного за правый край
   ctx.closePath();
   ctx.fill();
 
@@ -473,60 +474,72 @@ function drawRoad() {
   ctx.fillRect(0, VPY, W, H - VPY);
 }
 
-// ── Персонаж ────────────────────────────────────────────
+// ── Персонаж — canvas + screen blend ────────────────────
+// Изображение грузится браузером автоматически из тега <img id="char-img">
+// Спрайт-лист 3 колонки × 2 ряда:
+//   Ряд 0 (верх): FRONT | 3/4 | SIDE
+//   Ряд 1 (низ):  BACK  | RUN | JUMP
+
+function getCharImg() {
+  // Используем <img> из HTML — браузер гарантированно его загружает
+  return document.getElementById('char-img');
+}
+
 function drawPlayer() {
   const x    = playerX;
   const y    = GROUND_Y;
-  // Размер персонажа у земли
-  const pw   = Math.min(W * 0.22, 110);
-  const ph   = pw * 1.65;
-  // Лёгкое покачивание
-  const bob  = Math.sin(frameCount * 0.18) * 3.5;
+  const pw   = Math.min(W * 0.24, 118);
+  const ph   = pw * 1.7;
+  // Двойной синус — органичное покачивание
+  const bob  = Math.sin(frameCount * 0.16) * 4 + Math.sin(frameCount * 0.29) * 1.5;
   // Наклон при смене полосы
-  const tilt = (LANE_BOT[targetLane] - playerX) / (W * 0.3) * 0.18;
+  const tilt = (LANE_BOT[targetLane] - playerX) / (W * 0.35) * 0.12;
 
-  // Тень под персонажем
-  const shadowGrad = ctx.createRadialGradient(x, y + 10, 2, x, y + 10, pw * 0.65);
-  shadowGrad.addColorStop(0, 'rgba(0,0,0,0.55)');
-  shadowGrad.addColorStop(1, 'transparent');
-  ctx.fillStyle = shadowGrad;
+  // Тень под ногами
+  const sg = ctx.createRadialGradient(x, y + 8, 1, x, y + 8, pw * 0.6);
+  sg.addColorStop(0, 'rgba(0,0,0,0.7)');
+  sg.addColorStop(1, 'transparent');
+  ctx.fillStyle = sg;
   ctx.beginPath();
-  ctx.ellipse(x, y + 12, pw * 0.6, pw * 0.16, 0, 0, Math.PI*2);
+  ctx.ellipse(x, y + 10, pw * 0.55, pw * 0.13, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  if (charImg && charImg.complete && charImg.naturalWidth > 0) {
-    // Спрайт-лист: 3 столбца × 2 строки (FRONT|3/4|SIDE / BACK|RUN|JUMP)
-    const COLS = 3, ROWS = 2;
-    const sw = charImg.naturalWidth  / COLS;
-    const sh = charImg.naturalHeight / ROWS * 0.85; // обрезаем подпись снизу
+  const charEl = getCharImg();
 
-    // Чередуем RUN (col=1) и JUMP (col=2) для анимации бега
-    const frame = Math.floor(frameCount / 9) % 2;
+  if (charEl && charEl.complete && charEl.naturalWidth > 0) {
+    // Спрайт загружен — рисуем на canvas через screen blend
+    const COLS = 3, ROWS = 2;
+    const sw   = charEl.naturalWidth  / COLS;
+    const sh   = charEl.naturalHeight / ROWS;
+    // Чередуем RUN (col=1) и JUMP (col=2) каждые 8 кадров
+    const frame = Math.floor(frameCount / 8) % 2;
     const srcX  = sw * (1 + frame);
-    const srcY  = charImg.naturalHeight / ROWS;
+    const srcY  = sh * 1;           // нижний ряд
 
     ctx.save();
-    ctx.translate(x, y - ph/2 + bob);
+    ctx.translate(x, y - ph + bob);
     ctx.rotate(tilt);
-    // Рисуем персонажа напрямую — тёмный фон спрайта сливается с тёмным фоном игры
-    ctx.drawImage(charImg, srcX, srcY, sw, sh, -pw/2, 0, pw, ph);
+    // screen: тёмный фон спрайта (~#0f0f1a) + тёмный фон игры → почти невидим
+    ctx.globalCompositeOperation = 'screen';
+    ctx.drawImage(charEl, srcX, srcY, sw, sh * 0.82, -pw / 2, 0, pw, ph * 0.82);
     ctx.restore();
   } else {
-    // Fallback: простой прямоугольник
+    // Fallback — яркий заменитель пока изображение не загружено
     ctx.save();
-    ctx.translate(x, y - ph/2 + bob);
+    ctx.translate(x, y - ph * 0.5 + bob);
     ctx.rotate(tilt);
-    const fg = ctx.createLinearGradient(0, 0, 0, ph);
-    fg.addColorStop(0, '#ff6b35');
-    fg.addColorStop(1, '#e65c00');
-    ctx.fillStyle = fg;
+    const grad = ctx.createLinearGradient(-pw/2, 0, pw/2, ph * 0.5);
+    grad.addColorStop(0, '#ff6b9d');
+    grad.addColorStop(1, '#4ecdc4');
+    ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.roundRect(-pw/2, 0, pw, ph, 12);
+    ctx.roundRect(-pw / 2, 0, pw, ph * 0.5, pw * 0.12);
     ctx.fill();
-    ctx.font         = `${pw*0.5}px serif`;
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('💨', 0, ph/2);
+    // Лицо
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(0, ph * 0.12, pw * 0.15, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 }

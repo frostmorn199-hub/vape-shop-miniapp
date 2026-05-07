@@ -268,6 +268,24 @@ body {
 #hud-title { font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.45); letter-spacing: 1px; }
 #hud-score { font-size: 26px; font-weight: 900; color: #ffbe00; text-shadow: 0 0 20px rgba(255,190,0,0.6); }
 
+/* ── Персонаж (CSS overlay + screen blend) ── */
+#char-clip {
+  position: fixed;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 25;
+  mix-blend-mode: screen;   /* тёмный фон спрайта исчезает */
+  transform-origin: center bottom;
+  will-change: transform, left, top;
+}
+#char-img {
+  position: absolute;
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 #pause-overlay {
   position: fixed;
   inset: 0;

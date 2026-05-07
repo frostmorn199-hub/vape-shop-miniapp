@@ -117,10 +117,15 @@ function renderProducts() {
   }
 
   grid.innerHTML = list.map(p => {
-    const id  = p["ID"];
-    const qty = cardQty[id] || 1;
+    const id    = p["ID"];
+    const qty   = cardQty[id] || 1;
+    const photo = p["Фото"] || "";
+    const imgHtml = photo
+      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.parentElement.style.display='none'"></div>`
+      : "";
     return `
       <div class="product-card">
+        ${imgHtml}
         <div class="p-name">${p["Название"]}</div>
         <div class="p-brand">${p["Бренд"]}${p["Затяжки"] ? " · " + p["Затяжки"] + " тяг" : ""}</div>
         <div class="p-price">${p["Цена (₽)"].toLocaleString("ru")}₽</div>

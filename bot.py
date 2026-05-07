@@ -1,5 +1,6 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -16,7 +17,7 @@ API_TOKEN = "8751207190:AAEm1ZeGSJQn0LCKKIq6rd_GZxAChr2IhR0"
 ADMIN_ID = 525971484
 SELLER_IDS = [ADMIN_ID]  # добавить ID продавцов позже
 PICKUP_ADDRESS = "Кривошеина 13/2"
-WEBAPP_URL = "https://chamber-calculator-limit-enrolled.trycloudflare.com"  # вставить https-ссылку на Mini App после деплоя
+WEBAPP_URL = "https://vape-shop-miniapp.onrender.com"
 
 LOYALTY_LEVELS = [
     (300_000, "Платина 💎", 15),
@@ -36,6 +37,44 @@ def next_level_info(total: int):
         if total < threshold:
             return threshold, name
     return None, None
+
+def progress_bar(current: int, target: int, length: int = 10) -> str:
+    filled = int((current / target) * length)
+    return "▓" * filled + "░" * (length - filled)
+
+def loyalty_full_text(uid: int) -> str:
+    total = get_user_total(uid)
+    level_name, discount = get_loyalty(total)
+    next_t, next_name = next_level_info(total)
+
+    # Нижняя граница текущего диапазона (0 если ещё нет уровня)
+    sorted_asc = sorted(LOYALTY_LEVELS, key=lambda x: x[0])
+    prev_t = 0
+    for t, n, d in sorted_asc:
+        if t <= total:
+            prev_t = t
+
+    text = f"💰 Потрачено: {total:,}₽\n\n"
+
+    if level_name:
+        text += f"Твой уровень: {level_name} — скидка {discount}%\n"
+    else:
+        text += "Уровень: нет\n"
+
+    if next_t:
+        remaining = next_t - total
+        span = next_t - prev_t
+        bar = progress_bar(total - prev_t, span)
+        text += f"\nДо {next_name}:\n{bar} осталось {remaining:,}₽\n"
+    else:
+        text += "\n🏆 Максимальный уровень достигнут!\n"
+
+    text += "\n📊 Все уровни:\n"
+    for threshold, name, disc in sorted_asc:
+        mark = "✅" if total >= threshold else "⬜"
+        text += f"{mark} {name} — от {threshold:,}₽ ({disc}%)\n"
+
+    return text
 
 
 bot = Bot(token=API_TOKEN)
@@ -92,13 +131,20 @@ def update_user_total(uid: int, contact: str, amount: int) -> int:
 
 def main_menu():
     kb = InlineKeyboardMarkup()
+    if WEBAPP_URL:
+        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
     kb.add(InlineKeyboardButton("🔥 Одноразки",  callback_data="cat_Одноразка"))
     kb.add(InlineKeyboardButton("💧 Жидкости",   callback_data="cat_Жидкость"))
     kb.add(InlineKeyboardButton("🚬 Табак",      callback_data="cat_Табак"))
     kb.add(InlineKeyboardButton("⚙️ Устройства", callback_data="cat_Устройство"))
     kb.add(InlineKeyboardButton("🛒 Корзина",    callback_data="open_cart"))
+    kb.add(InlineKeyboardButton("🎁 Моя лояльность", callback_data="my_loyalty"))
+    return kb
+
+def webapp_keyboard():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
     if WEBAPP_URL:
-        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
+        kb.add(KeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
     return kb
 
 def loyalty_text(uid: int) -> str:
@@ -119,24 +165,32 @@ def loyalty_text(uid: int) -> str:
 async def start(msg: types.Message, state: FSMContext):
     await state.finish()
     text = "Добро пожаловать в VAPE SHOP 💨\n\n" + loyalty_text(msg.from_user.id)
-    await msg.answer(text, reply_markup=main_menu())
+    # Постоянная кнопка Mini App под полем ввода
+    await msg.answer(text, reply_markup=webapp_keyboard())
+    # Инлайн-меню с категориями
+    await msg.answer("Выбери раздел:", reply_markup=main_menu())
 
 @dp.message_handler(commands=["loyalty"], state="*")
 async def loyalty_cmd(msg: types.Message):
-    total = get_user_total(msg.from_user.id)
-    level_name, _ = get_loyalty(total)
-    text = f"📊 Твои покупки: {total:,}₽\n\n"
-    for threshold, name, disc in reversed(LOYALTY_LEVELS):
-        mark = "✅" if total >= threshold else "⬜"
-        text += f"{mark} {name} — от {threshold:,}₽ ({disc}%)\n"
-    next_t, next_name = next_level_info(total)
-    if next_t:
-        text += f"\nДо следующего уровня: {next_t - total:,}₽"
-    await msg.answer(text)
+    await msg.answer(loyalty_full_text(msg.from_user.id))
+
+@dp.message_handler(commands=["app"], state="*")
+async def app_cmd(msg: types.Message):
+    if WEBAPP_URL:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
+        await msg.answer("Нажми кнопку, чтобы открыть Mini App:", reply_markup=kb)
+    else:
+        await msg.answer("Mini App пока недоступен.")
 
 @dp.message_handler(commands=["cart"], state="*")
 async def cart_cmd(msg: types.Message):
     await show_cart(msg, msg.from_user.id)
+
+@dp.callback_query_handler(lambda c: c.data == "my_loyalty")
+async def my_loyalty_callback(call: types.CallbackQuery):
+    await call.answer()
+    await call.message.answer(loyalty_full_text(call.from_user.id))
 
 
 # --- НАЗАД ---
@@ -581,5 +635,13 @@ async def web_app_order(msg: types.Message):
         await msg.answer("Ошибка при оформлении. Попробуй через бота.")
 
 
+async def on_startup(dp):
+    await bot.set_my_commands([
+        types.BotCommand("start",   "Главное меню"),
+        types.BotCommand("app",     "Открыть Mini App"),
+        types.BotCommand("loyalty", "Моя лояльность"),
+        types.BotCommand("cart",    "Корзина"),
+    ])
+
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)

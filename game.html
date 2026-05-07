@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>VapeRun</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="game.css">
+</head>
+<body>
+
+<!-- ════════ СТАРТ ════════ -->
+<div id="s-start" class="screen active">
+  <div class="start-glow"></div>
+  <div class="start-logo">💨 VapeRun</div>
+  <div class="start-sub">VAPE SHOP VRN</div>
+  <div id="best-display" class="best-score"></div>
+
+  <button class="btn-primary" id="btn-play">▶ Играть</button>
+  <button class="btn-wheel" id="btn-wheel">🎰 Крутить колесо</button>
+  <div id="wheel-cooldown" class="hint hidden">
+    Следующий спин через <span id="next-spin"></span>
+  </div>
+
+  <button class="btn-back" onclick="window.location.href='index.html'">← В магазин</button>
+</div>
+
+<!-- ════════ КОЛЕСО ════════ -->
+<div id="s-wheel" class="screen hidden">
+  <div class="wheel-title">🎰 Колесо Фортуны</div>
+  <div class="wheel-sub">Ежедневный приз</div>
+  <div class="wheel-wrap">
+    <div class="wheel-ptr">▼</div>
+    <canvas id="wheelCanvas"></canvas>
+  </div>
+  <button class="btn-primary" id="btn-spin">Крутить!</button>
+  <button class="btn-secondary" onclick="showScreen('s-start')">Назад</button>
+</div>
+
+<!-- ════════ ПРИЗ ════════ -->
+<div id="s-prize" class="screen hidden">
+  <div class="prize-emoji" id="prize-emoji">🎁</div>
+  <div class="prize-title">Поздравляем!</div>
+  <div class="prize-text" id="prize-text"></div>
+  <div class="prize-code-box" id="prize-code-box">
+    <div class="prize-code-label">Твой промокод:</div>
+    <div class="prize-code-val" id="prize-code-val"></div>
+    <button class="btn-copy" id="btn-copy" onclick="copyCode()">📋 Скопировать</button>
+    <div class="prize-hint">Назови продавцу при следующем заказе</div>
+  </div>
+  <div class="prize-physical" id="prize-physical">
+    <div class="prize-hint-big">Назови продавцу при следующем заказе 🛒</div>
+  </div>
+  <button class="btn-primary" id="btn-play-after">▶ Играть</button>
+  <button class="btn-secondary" onclick="window.location.href='index.html'">← В магазин</button>
+</div>
+
+<!-- ════════ ИГРА ════════ -->
+<div id="s-game" class="screen hidden game-screen">
+  <div id="hud">
+    <span id="hud-title">💨 VapeRun</span>
+    <span id="hud-score">0</span>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="pause-overlay" class="hidden">
+    <button class="btn-primary" onclick="resumeGame()">▶ Продолжить</button>
+    <button class="btn-secondary" onclick="showScreen('s-start')">На главную</button>
+  </div>
+</div>
+
+<!-- ════════ КОНЕЦ ════════ -->
+<div id="s-over" class="screen hidden">
+  <div class="go-icon">🪫</div>
+  <div class="go-title">Аккумулятор сел!</div>
+  <div class="go-row">Счёт: <span id="go-score" class="go-val">0</span></div>
+  <div class="go-row">Рекорд: <span id="go-best" class="go-val">0</span></div>
+  <button class="btn-primary" id="btn-retry">▶ Снова</button>
+  <button class="btn-secondary" onclick="showScreen('s-start')">На главную</button>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>

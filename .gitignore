@@ -1,0 +1,8 @@
+creds.json
+cf_tunnel.log
+__pycache__/
+*.pyc
+.env
+cloudflared.exe
+*.exe
+

@@ -1,0 +1,307 @@
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #07071a;
+  color: #fff;
+  min-height: 100vh;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px 20px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.hidden { display: none !important; }
+
+/* ── СТАРТ ──────────────────────────────── */
+.start-glow {
+  position: absolute;
+  width: 300px; height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(230,92,0,0.25) 0%, transparent 70%);
+  top: 50%; left: 50%; transform: translate(-50%, -60%);
+  pointer-events: none;
+}
+
+.start-logo {
+  font-size: 44px;
+  font-weight: 900;
+  background: linear-gradient(135deg, #ff6b35, #ffbe00);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 6px;
+  z-index: 1;
+}
+
+.start-sub {
+  color: rgba(255,255,255,0.35);
+  font-size: 13px;
+  letter-spacing: 4px;
+  margin-bottom: 44px;
+  z-index: 1;
+}
+
+.best-score {
+  color: #ffbe00;
+  font-size: 18px;
+  font-weight: 700;
+  min-height: 28px;
+  margin-bottom: 24px;
+  z-index: 1;
+}
+
+/* ── КНОПКИ ─────────────────────────────── */
+.btn-primary {
+  width: 240px;
+  padding: 16px;
+  border-radius: 18px;
+  border: none;
+  background: linear-gradient(135deg, #e65c00, #ffbe00);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+  margin: 8px 0;
+  box-shadow: 0 8px 32px rgba(230,92,0,0.4);
+  transition: transform .12s, box-shadow .12s;
+  z-index: 1;
+}
+.btn-primary:active { transform: scale(.95); box-shadow: 0 4px 16px rgba(230,92,0,0.3); }
+.btn-primary:disabled { opacity: .45; cursor: default; transform: none; }
+
+.btn-wheel {
+  width: 240px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 2px solid rgba(255,190,0,0.35);
+  background: rgba(255,190,0,0.07);
+  color: #ffbe00;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  margin: 8px 0;
+  transition: background .2s;
+  z-index: 1;
+}
+.btn-wheel:active { background: rgba(255,190,0,0.15); }
+.btn-wheel:disabled { opacity: .4; cursor: default; }
+
+.btn-secondary {
+  width: 240px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(255,255,255,0.6);
+  font-size: 15px;
+  cursor: pointer;
+  margin: 6px 0;
+  z-index: 1;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.3);
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 28px;
+  padding: 8px;
+  z-index: 1;
+}
+
+.btn-copy {
+  padding: 10px 24px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,190,0,0.4);
+  background: rgba(255,190,0,0.1);
+  color: #ffbe00;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin: 10px 0;
+}
+
+.hint {
+  color: rgba(255,255,255,0.35);
+  font-size: 13px;
+  margin-top: 6px;
+  z-index: 1;
+}
+
+/* ── КОЛЕСО ─────────────────────────────── */
+.wheel-title {
+  font-size: 28px;
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.wheel-sub {
+  color: rgba(255,255,255,0.4);
+  font-size: 13px;
+  margin-bottom: 28px;
+}
+
+.wheel-wrap {
+  position: relative;
+  margin-bottom: 28px;
+}
+
+.wheel-ptr {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 28px;
+  color: #ffbe00;
+  filter: drop-shadow(0 0 10px #ffbe00);
+  z-index: 5;
+  line-height: 1;
+}
+
+#wheelCanvas {
+  border-radius: 50%;
+  box-shadow: 0 0 60px rgba(0,0,0,0.6), 0 0 30px rgba(230,92,0,0.2);
+  display: block;
+}
+
+/* ── ПРИЗ ───────────────────────────────── */
+.prize-emoji {
+  font-size: 88px;
+  margin-bottom: 16px;
+  animation: prizePop .5s cubic-bezier(.36,.07,.19,.97);
+}
+@keyframes prizePop {
+  0%   { transform: scale(0.2) rotate(-15deg); opacity: 0; }
+  70%  { transform: scale(1.2) rotate(5deg); }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+
+.prize-title {
+  font-size: 30px;
+  font-weight: 900;
+  color: #ffbe00;
+  margin-bottom: 12px;
+}
+
+.prize-text {
+  font-size: 18px;
+  color: rgba(255,255,255,0.85);
+  margin-bottom: 20px;
+  line-height: 1.5;
+  max-width: 280px;
+}
+
+.prize-code-box {
+  background: rgba(255,255,255,0.05);
+  border: 2px dashed rgba(255,190,0,0.4);
+  border-radius: 20px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+  width: 280px;
+}
+.prize-code-label {
+  color: rgba(255,255,255,0.4);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.prize-code-val {
+  font-size: 28px;
+  font-weight: 900;
+  color: #ffbe00;
+  letter-spacing: 3px;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 2px;
+}
+.prize-hint {
+  color: rgba(255,255,255,0.35);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.prize-physical { margin-bottom: 24px; }
+.prize-hint-big {
+  font-size: 16px;
+  color: rgba(255,255,255,0.6);
+  max-width: 260px;
+  line-height: 1.5;
+}
+
+/* ── ИГРОВОЙ ЭКРАН ──────────────────────── */
+.game-screen {
+  padding: 0 !important;
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+}
+
+#gameCanvas {
+  display: block;
+  touch-action: none;
+  position: fixed;
+  top: 0; left: 0;
+}
+
+#hud {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(5,5,26,0.92) 0%, rgba(5,5,26,0) 100%);
+  backdrop-filter: blur(4px);
+}
+
+#hud-title  { font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.45); letter-spacing: 1px; }
+#hud-coins  { font-size: 17px; font-weight: 800; color: #a0eeff; text-shadow: 0 0 14px rgba(140,220,255,0.75); }
+#hud-score  { font-size: 26px; font-weight: 900; color: #ffbe00; text-shadow: 0 0 20px rgba(255,190,0,0.6); }
+
+/* ── Персонаж (CSS overlay + screen blend) ── */
+#char-clip {
+  position: fixed;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 25;
+  mix-blend-mode: screen;   /* тёмный фон спрайта исчезает */
+  transform-origin: center bottom;
+  will-change: transform, left, top;
+}
+#char-img {
+  position: absolute;
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+#pause-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5,5,26,0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 60;
+}
+
+/* ── КОНЕЦ ИГРЫ ─────────────────────────── */
+.go-icon   { font-size: 80px; margin-bottom: 16px; }
+.go-title  { font-size: 32px; font-weight: 900; color: #e74c3c; margin-bottom: 28px; }
+.go-row    { font-size: 20px; margin-bottom: 10px; }
+.go-val    { font-weight: 900; color: #ffbe00; font-size: 26px; }
+.go-coins  { color: #a0eeff; text-shadow: 0 0 12px rgba(140,220,255,0.7); }

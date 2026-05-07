@@ -2,6 +2,7 @@ services:
   - type: web
     name: vape-shop-miniapp
     runtime: python
+    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements-server.txt
     startCommand: gunicorn server:app
     envVars:

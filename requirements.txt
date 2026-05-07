@@ -1,0 +1,6 @@
+aiogram==2.25.2
+gspread
+oauth2client
+flask
+flask-cors
+gunicorn

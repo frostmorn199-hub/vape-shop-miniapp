@@ -41,6 +41,22 @@ const PRIZE_TEXTS = {
   coal:   'Уголь для кальяна — бесплатно!',
 };
 
+// ─── API ────────────────────────────────────────────────
+const BASE_URL = window.location.origin;
+const TG_UID   = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || "";
+
+async function registerPromoCode(code, type, discount) {
+  try {
+    await fetch(`${BASE_URL}/api/register-promo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, type, discount, uid: TG_UID }),
+    });
+  } catch (e) {
+    console.warn("registerPromoCode failed", e);
+  }
+}
+
 // ─── Сторадж ────────────────────────────────────────────
 const genCode      = p  => p + '-' + Math.random().toString(36).slice(2,8).toUpperCase();
 const todayKey     = () => new Date().toISOString().slice(0,10);
@@ -225,6 +241,11 @@ function spinWheel() {
       const prize = PRIZES[winIdx];
       const code  = prize.isPromo ? genCode(prize.prefix) : null;
       markSpun(prize.id, code);
+      // Регистрируем промокод на сервере чтобы бот мог его принять
+      if (code && prize.isPromo) {
+        const discountPct = prize.id === 'disc10' ? 10 : 5;
+        registerPromoCode(code, prize.id, discountPct);
+      }
       showPrize(prize, code);
     }
   }

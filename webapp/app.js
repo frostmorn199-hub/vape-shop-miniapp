@@ -246,6 +246,20 @@ function shareRefCode() {
 }
 
 
+// ── PHOTO URL ─────────────────────────────────────────────────
+
+function normalizePhotoUrl(url) {
+  if (!url) return "";
+  // Google Drive: /file/d/FILE_ID/view → прямая ссылка на изображение
+  const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return `https://lh3.googleusercontent.com/d/${m[1]}`;
+  // Google Drive: ?id=FILE_ID
+  const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m2 && url.includes("drive.google.com")) return `https://lh3.googleusercontent.com/d/${m2[1]}`;
+  return url;
+}
+
+
 // ── PRODUCTS ──────────────────────────────────────────────────
 
 function renderProducts() {
@@ -262,7 +276,7 @@ function renderProducts() {
   grid.innerHTML = list.map(p => {
     const id    = p["ID"];
     const qty   = cardQty[id] || 1;
-    const photo = p["Фото"] || "";
+    const photo = normalizePhotoUrl(p["Фото"] || "");
     const imgHtml = photo
       ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.parentElement.style.display='none'"></div>`
       : "";

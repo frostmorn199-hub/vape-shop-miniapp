@@ -5,6 +5,7 @@ services:
     pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements-server.txt
     startCommand: gunicorn server:app
+    autoDeploy: true
     envVars:
       - key: GOOGLE_CREDS_JSON
         sync: false

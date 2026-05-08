@@ -97,7 +97,11 @@ def get_user_loyalty(uid: int):
     try:
         records = clients_ws.get_all_records()
         for r in records:
-            if int(r.get("ID", 0)) == uid:
+            try:
+                row_uid = int(r.get("ID", 0) or 0)
+            except (ValueError, TypeError):
+                continue
+            if row_uid == uid:
                 total      = int(r.get("Итого", 0) or 0)
                 vaypecoins = int(r.get("Вейпкоины", 0) or 0)
                 ref_code   = r.get("Промокод", "") or ""

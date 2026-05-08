@@ -181,8 +181,11 @@ def _find_client_row(uid: int):
     try:
         records = clients_ws.get_all_records()
         for idx, r in enumerate(records):
-            if int(r.get("ID", 0)) == uid:
-                return idx + 2, r
+            try:
+                if int(r.get("ID", 0) or 0) == uid:
+                    return idx + 2, r
+            except (ValueError, TypeError):
+                continue
     except Exception as e:
         logging.error(f"_find_client_row: {e}")
     return None, None

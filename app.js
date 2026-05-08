@@ -11,6 +11,13 @@ const LOYALTY_LEVELS = [
   { threshold:  20_000, name: "Бронза 🥉",  discount:  5 },
 ];
 
+const REFERRAL_LEVELS = [
+  { threshold: 100, name: "Платина 🔥", pct: 10 },
+  { threshold:  40, name: "Золото 🥇",  pct:  7 },
+  { threshold:  15, name: "Серебро 🥈", pct:  5 },
+  { threshold:   1, name: "Бронза 🥉",  pct:  3 },
+];
+
 const CATEGORIES = [
   { key: "all",        label: "Все" },
   { key: "Одноразка", label: "🔥 Одноразки" },
@@ -19,13 +26,18 @@ const CATEGORIES = [
   { key: "Устройство",label: "⚙️ Устройства" },
 ];
 
-let products = [];
-let cart     = JSON.parse(localStorage.getItem("vape_cart") || "{}");  // {id: qty}
-let cardQty  = {};   // qty selector on product cards
+let products   = [];
+let cart       = JSON.parse(localStorage.getItem("vape_cart") || "{}");
+let cardQty    = {};
 let currentCat = "all";
-let loyalty  = { total: 0, level: null, discount: 0, next_threshold: 20_000 };
+let loyalty    = {
+  total: 0, level: null, discount: 0, next_threshold: 20_000,
+  vaypecoins: 0, ref_code: "", ref_count: 0,
+  ref_level: null, ref_pct: 0, next_ref_threshold: 1,
+};
 
-// ── INIT ──────────────────────────────────────────────
+
+// ── INIT ──────────────────────────────────────────────────────
 
 async function init() {
   buildTabs();
@@ -37,7 +49,8 @@ async function init() {
       loyalty = await r.json();
     } catch (e) { console.warn("loyalty fetch failed", e); }
   }
-  updateLoyaltyUI();
+  updateLoyaltyBar();
+  updateCheckoutVC();
 
   try {
     const r = await fetch(`${BASE}/api/products`);
@@ -49,9 +62,11 @@ async function init() {
   }
 
   updateFab();
+  buildLoyaltyScreen();
 }
 
-// ── TABS ──────────────────────────────────────────────
+
+// ── TABS ──────────────────────────────────────────────────────
 
 function buildTabs() {
   const wrap = document.getElementById("tabs");
@@ -70,10 +85,10 @@ function buildTabs() {
   });
 }
 
-// ── LOYALTY UI ────────────────────────────────────────
 
-function updateLoyaltyUI() {
-  const badge   = document.getElementById("loyalty-badge");
+// ── LOYALTY BAR (header) ──────────────────────────────────────
+
+function updateLoyaltyBar() {
   const label   = document.getElementById("loyalty-label");
   const totalEl = document.getElementById("loyalty-total");
   const fill    = document.getElementById("progress-fill");
@@ -81,29 +96,152 @@ function updateLoyaltyUI() {
   const total = loyalty.total || 0;
   totalEl.textContent = `${total.toLocaleString("ru")}₽`;
 
-  if (loyalty.level) {
-    badge.textContent = loyalty.level;
-    badge.classList.remove("hidden");
-  }
-
   const next = loyalty.next_threshold;
+
   if (next) {
-    const prevLevel = LOYALTY_LEVELS.find(l => l.threshold === next);
-    const prevIdx   = LOYALTY_LEVELS.indexOf(prevLevel);
-    const prevThreshold = prevIdx < LOYALTY_LEVELS.length - 1
-      ? LOYALTY_LEVELS[prevIdx + 1].threshold
-      : 0;
+    // LOYALTY_LEVELS уже отсортирован по убыванию (300k→20k),
+    // find находит наибольший порог ниже next — это ближайший предыдущий уровень
+    const prevLevel = LOYALTY_LEVELS.find(l => l.threshold < next);
+    const prevThreshold = prevLevel ? prevLevel.threshold : 0;
     const pct = Math.min(((total - prevThreshold) / (next - prevThreshold)) * 100, 100);
     fill.style.width = pct + "%";
     const nextName = LOYALTY_LEVELS.find(l => l.threshold === next)?.name || "";
     label.textContent = `До ${nextName}: ${(next - total).toLocaleString("ru")}₽`;
   } else {
     fill.style.width = "100%";
-    label.textContent = "Максимальный уровень 🏆";
+    label.textContent = loyalty.level
+      ? `${loyalty.level} — скидка ${loyalty.discount}% 🏆`
+      : "Максимальный уровень 🏆";
   }
 }
 
-// ── PRODUCTS ──────────────────────────────────────────
+
+// ── LOYALTY SCREEN ────────────────────────────────────────────
+
+function buildLoyaltyScreen() {
+  const total     = loyalty.total || 0;
+  const coins     = loyalty.vaypecoins || 0;
+  const refCode   = loyalty.ref_code || "—";
+  const refCount  = loyalty.ref_count || 0;
+  const refPct    = loyalty.ref_pct || 0;
+  const nextRefT  = loyalty.next_ref_threshold;
+  const discount  = loyalty.discount || 0;
+  const nextT     = loyalty.next_threshold;
+
+  // Вейпкоины
+  document.getElementById("loy-coins").textContent = `${coins.toLocaleString("ru")} VC`;
+
+  // Реферальный уровень
+  const refLevelEl = document.getElementById("ref-level-name");
+  if (loyalty.ref_level) {
+    refLevelEl.textContent = loyalty.ref_level;
+    refLevelEl.classList.remove("no-level");
+  } else {
+    refLevelEl.textContent = "Нет уровня";
+    refLevelEl.classList.add("no-level");
+  }
+  document.getElementById("ref-count-text").textContent = `${refCount} рефералов`;
+  document.getElementById("ref-pct-text").textContent = refPct > 0 ? `${refPct}% кэшбек` : "";
+
+  // Находим следующий уровень по threshold из сервера (он всегда корректный)
+  const nextRefLevel = nextRefT ? REFERRAL_LEVELS.find(l => l.threshold === nextRefT) : null;
+  if (nextRefT && nextRefLevel) {
+    // REFERRAL_LEVELS по убыванию (100→1) — find вернёт текущий (ближайший достигнутый) уровень
+    const prevRefLevel = REFERRAL_LEVELS.find(l => l.threshold <= refCount);
+    const prevRefT = prevRefLevel ? prevRefLevel.threshold : 0;
+    const refPct2  = Math.min(((refCount - prevRefT) / (nextRefT - prevRefT)) * 100, 100);
+    document.getElementById("ref-progress-fill").style.width = refPct2 + "%";
+    document.getElementById("ref-progress-label").textContent =
+      `До ${nextRefLevel.name}: ${refCount}/${nextRefT} рефералов`;
+  } else {
+    document.getElementById("ref-progress-fill").style.width = "100%";
+    document.getElementById("ref-progress-label").textContent = "🏆 Максимальный реферальный уровень!";
+  }
+
+  // Реферальный код
+  document.getElementById("ref-code-display").textContent = refCode;
+
+  // Реферальные уровни
+  const refGrid = document.getElementById("ref-levels-grid");
+  refGrid.innerHTML = sortedRef.map(l => {
+    const done = refCount >= l.threshold;
+    return `<div class="loy-level-item ${done ? "done" : ""}">
+      <span class="li-mark">${done ? "✅" : "⬜"}</span>
+      <span class="li-name">${l.name}</span>
+      <span class="li-val">${l.threshold}+ реф. · ${l.pct}%</span>
+    </div>`;
+  }).join("");
+
+  // Уровень скидок
+  const spendLevelEl = document.getElementById("spend-level-name");
+  if (loyalty.level) {
+    spendLevelEl.textContent = loyalty.level;
+    spendLevelEl.classList.remove("no-level");
+  } else {
+    spendLevelEl.textContent = "Нет уровня";
+    spendLevelEl.classList.add("no-level");
+  }
+  document.getElementById("spend-total-text").textContent = `${total.toLocaleString("ru")}₽ потрачено`;
+  document.getElementById("spend-disc-text").textContent = discount > 0 ? `${discount}% скидка` : "";
+
+  if (nextT) {
+    // LOYALTY_LEVELS по убыванию — find вернёт ближайший предыдущий уровень
+    const prevSpend = LOYALTY_LEVELS.find(l => l.threshold < nextT);
+    const prevT     = prevSpend ? prevSpend.threshold : 0;
+    const spPct      = Math.min(((total - prevT) / (nextT - prevT)) * 100, 100);
+    document.getElementById("spend-progress-fill").style.width = spPct + "%";
+    const nextSpendName = LOYALTY_LEVELS.find(l => l.threshold === nextT)?.name || "";
+    document.getElementById("spend-progress-label").textContent =
+      `До ${nextSpendName}: ${(nextT - total).toLocaleString("ru")}₽`;
+  } else {
+    document.getElementById("spend-progress-fill").style.width = "100%";
+    document.getElementById("spend-progress-label").textContent = "🏆 Максимальный уровень скидок!";
+  }
+
+  // Уровни скидок
+  const spendGrid = document.getElementById("spend-levels-grid");
+  const sortedSpend = [...LOYALTY_LEVELS].reverse();
+  spendGrid.innerHTML = sortedSpend.map(l => {
+    const done = total >= l.threshold;
+    return `<div class="loy-level-item ${done ? "done" : ""}">
+      <span class="li-mark">${done ? "✅" : "⬜"}</span>
+      <span class="li-name">${l.name}</span>
+      <span class="li-val">${l.threshold.toLocaleString("ru")}₽ · ${l.discount}% скидка</span>
+    </div>`;
+  }).join("");
+}
+
+function updateCheckoutVC() {
+  const coins = loyalty.vaypecoins || 0;
+  const el = document.getElementById("checkout-vc");
+  const block = document.getElementById("vc-balance-block");
+  if (el) el.textContent = `${coins.toLocaleString("ru")} VC`;
+  if (block) block.classList.remove("hidden");
+}
+
+function copyRefCode() {
+  const code = loyalty.ref_code;
+  if (!code) return;
+  navigator.clipboard?.writeText(code).then(() => {
+    tg.showAlert(`Код ${code} скопирован!`);
+  }).catch(() => {
+    tg.showAlert(`Твой код: ${code}`);
+  });
+}
+
+function shareRefCode() {
+  const code = loyalty.ref_code;
+  if (!code) return;
+  const text = `Я пользуюсь VAPE SHOP VRN 💨\nВведи мой код ${code} при регистрации и получи 100 вейпкоинов на баланс! 🎁`;
+  if (navigator.share) {
+    navigator.share({ text }).catch(() => {});
+  } else {
+    tg.showAlert(text);
+  }
+}
+
+
+// ── PRODUCTS ──────────────────────────────────────────────────
 
 function renderProducts() {
   const grid = document.getElementById("products-grid");
@@ -165,12 +303,15 @@ function saveCart() { localStorage.setItem("vape_cart", JSON.stringify(cart)); }
 
 function updateFab() {
   const total = Object.values(cart).reduce((a, b) => a + b, 0);
-  const fab   = document.getElementById("cart-fab");
-  document.getElementById("fab-count").textContent = total;
-  fab.classList.toggle("hidden", total === 0);
+  const badge = document.getElementById("nav-cart-count");
+  if (badge) {
+    badge.textContent = total;
+    badge.classList.toggle("hidden", total === 0);
+  }
 }
 
-// ── CART SCREEN ───────────────────────────────────────
+
+// ── CART SCREEN ───────────────────────────────────────────────
 
 function renderCart() {
   const itemsEl = document.getElementById("cart-items");
@@ -230,11 +371,23 @@ function removeFromCart(id) {
   saveCart(); updateFab(); renderCart();
 }
 
-// ── CHECKOUT ──────────────────────────────────────────
+
+// ── CHECKOUT ──────────────────────────────────────────────────
 
 function toggleAddress() {
   const delivery = document.querySelector('input[name="delivery"]:checked')?.value;
-  document.getElementById("address-block").classList.toggle("hidden", delivery !== "courier");
+  const isCourier = delivery === "courier";
+  document.getElementById("address-block").classList.toggle("hidden", !isCourier);
+  document.getElementById("comment-block").classList.toggle("hidden", !isCourier);
+  // Скрываем наличные для курьера
+  const cashOption = document.getElementById("cash-option");
+  if (cashOption) {
+    cashOption.classList.toggle("hidden", isCourier);
+    // Если курьер — переключаем на карту
+    if (isCourier) {
+      document.querySelector('input[name="pay"][value="card"]').checked = true;
+    }
+  }
   renderOrderSummary();
 }
 
@@ -268,6 +421,9 @@ function submitOrder() {
   const address  = delivery === "courier"
     ? document.getElementById("inp-address").value.trim()
     : "Кривошеина 13/2";
+  const comment  = delivery === "courier"
+    ? (document.getElementById("inp-comment")?.value.trim() || "")
+    : "";
 
   if (!contact) { tg.showAlert("Укажи контакт для связи"); return; }
   if (delivery === "courier" && !address) { tg.showAlert("Укажи адрес доставки"); return; }
@@ -282,27 +438,39 @@ function submitOrder() {
     price: p["Цена (₽)"],
   }));
 
-  // очищаем корзину и отправляем в бот
   cart = {};
   saveCart();
 
-  tg.sendData(JSON.stringify({ contact, delivery, address, pay, items }));
+  tg.sendData(JSON.stringify({ contact, delivery, address, pay, items, comment }));
 }
 
-// ── NAVIGATION ────────────────────────────────────────
 
-function showScreen(name) {
+// ── NAVIGATION ────────────────────────────────────────────────
+
+function showScreen(name, navBtn) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  document.getElementById(`screen-${name}`).classList.add("active");
+  const target = document.getElementById(`screen-${name}`);
+  if (target) target.classList.add("active");
   window.scrollTo(0, 0);
+
+  // Обновляем nav кнопки
+  if (navBtn) {
+    document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
+    navBtn.classList.add("active");
+  }
+
   if (name === "cart")     renderCart();
-  if (name === "checkout") { renderOrderSummary(); }
+  if (name === "checkout") renderOrderSummary();
+  if (name === "loyalty")  buildLoyaltyScreen();
+
+  // Управление главной кнопкой TG
+  if (name === "catalog" || name === "loyalty") {
+    tg.MainButton.hide();
+  } else if (name === "cart") {
+    tg.MainButton.setText("Оформить заказ");
+    tg.MainButton.show();
+    tg.MainButton.onClick(() => showScreen("checkout", null));
+  }
 }
-
-// ── MAIN BUTTON ───────────────────────────────────────
-
-tg.MainButton.setText("🛒 Корзина");
-tg.MainButton.show();
-tg.MainButton.onClick(() => showScreen("cart"));
 
 init();

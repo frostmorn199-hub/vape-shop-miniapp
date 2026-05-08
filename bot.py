@@ -71,7 +71,7 @@ def get_referral_level(count: int):
     return None, 0
 
 def next_referral_level_info(count: int):
-    for threshold, name, _ in REFERRAL_LEVELS:
+    for threshold, name, _ in sorted(REFERRAL_LEVELS, key=lambda x: x[0]):
         if count < threshold:
             return threshold, name
     return None, None
@@ -101,6 +101,7 @@ user_qty = {}
 class OrderState(StatesGroup):
     waiting_contact = State()
     waiting_address = State()
+    waiting_comment = State()
     waiting_payment = State()
 
 class PromoState(StatesGroup):
@@ -119,11 +120,15 @@ def init_sheets():
 
     try:
         orders_ws = spreadsheet.worksheet("Заказы")
+        # Добавляем колонку Товары_JSON если её нет
+        orders_headers = orders_ws.row_values(1)
+        if "Товары_JSON" not in orders_headers:
+            orders_ws.update_cell(1, len(orders_headers) + 1, "Товары_JSON")
     except gspread.exceptions.WorksheetNotFound:
-        orders_ws = spreadsheet.add_worksheet("Заказы", rows=1000, cols=11)
+        orders_ws = spreadsheet.add_worksheet("Заказы", rows=1000, cols=12)
         orders_ws.append_row([
             "Заказ_ID", "Покупатель_ID", "Контакт", "Дата",
-            "Сумма", "Финальная_сумма", "Тип", "Адрес", "Оплата", "Статус", "Состав"
+            "Сумма", "Финальная_сумма", "Тип", "Адрес", "Оплата", "Статус", "Состав", "Товары_JSON"
         ])
 
     global partners_ws
@@ -328,13 +333,13 @@ def apply_promo_code(uid: int, code: str) -> tuple:
 # ── Заказы ──────────────────────────────────────────────────
 
 def save_order(order_id: str, uid: int, contact: str, raw_total: int, final_total: int,
-               delivery: str, address: str, pay: str, summary: str):
+               delivery: str, address: str, pay: str, summary: str, items_json: str = ""):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     orders_ws.append_row([
         order_id, uid, contact, now, raw_total, final_total,
         "Доставка" if delivery == "courier" else "Самовывоз",
         address, "Перевод" if pay == "card" else "Наличные",
-        "pending", summary
+        "pending", summary, items_json
     ])
 
 def get_order(order_id: str):
@@ -364,6 +369,77 @@ def seller_kb(order_id: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("❌ Отменить",            callback_data=f"order_cancel_{order_id}")
     )
     return kb
+
+
+# ── Восстановление остатка при отмене ───────────────────────
+
+def restore_order_stock(order_id: str):
+    """Возвращает товары на остаток при отмене заказа."""
+    order = get_order(order_id)
+    if not order:
+        return
+    try:
+        items_json_str = str(order.get("Товары_JSON", "") or "")
+        if not items_json_str:
+            return
+        items_list = json.loads(items_json_str)
+    except Exception as e:
+        logging.error(f"restore_order_stock parse: {e}")
+        return
+    data_gs = products_ws.get_all_records()
+    for item_data in items_list:
+        pid = item_data["id"]
+        qty = item_data["qty"]
+        for idx, item in enumerate(data_gs):
+            if item["ID"] == pid:
+                products_ws.update_cell(idx + 2, 7, item["Остаток"] + qty)
+                break
+
+
+# ── Запись продажи при подтверждении ────────────────────────
+
+def write_order_to_sales(order_id: str):
+    """Записывает строки продаж и обновляет сумму у клиента только после подтверждения."""
+    order = get_order(order_id)
+    if not order:
+        return
+    try:
+        items_json_str = str(order.get("Товары_JSON", "") or "")
+        if not items_json_str:
+            return
+        items_list = json.loads(items_json_str)
+    except Exception as e:
+        logging.error(f"write_order_to_sales parse: {e}")
+        return
+
+    uid        = int(order.get("Покупатель_ID", 0))
+    contact    = order.get("Контакт", "—")
+    delivery   = order.get("Тип", "Самовывоз")
+    address    = order.get("Адрес", "")
+    pay_label  = order.get("Оплата", "")
+    raw_total  = int(order.get("Сумма", 0) or 0)
+    final_total = int(order.get("Финальная_сумма", 0) or 0)
+    discount_pct = round((raw_total - final_total) / raw_total * 100) if raw_total > 0 else 0
+
+    now     = datetime.now().strftime("%Y-%m-%d %H:%M")
+    data_gs = products_ws.get_all_records()
+
+    for item_data in items_list:
+        pid = item_data["id"]
+        qty = item_data["qty"]
+        for item in data_gs:
+            if item["ID"] == pid:
+                price = item["Цена (₽)"]
+                summ  = price * qty
+                sales_ws.append_row([
+                    now, uid, contact,
+                    item["Название"], qty, price, summ,
+                    delivery, address, pay_label, discount_pct, final_total
+                ])
+                break
+
+    # Обновляем суммарные траты клиента для системы лояльности
+    update_user_total(uid, contact, final_total)
 
 
 # ── Начисление вейпкоинов после подтверждения ───────────────
@@ -490,7 +566,12 @@ def loyalty_full_text(uid: int) -> str:
     text += f"Активных рефералов: {ref_count}\n"
     text += f"Уровень: {ref_level_name} — {ref_pct}% кэшбек\n" if ref_level_name else "Уровень: нет (пригласи друга!)\n"
     if next_ref_t:
-        bar = progress_bar(ref_count, next_ref_t)
+        sorted_ref_asc = sorted(REFERRAL_LEVELS, key=lambda x: x[0])
+        prev_ref_t = 0
+        for t, _, __ in sorted_ref_asc:
+            if t <= ref_count:
+                prev_ref_t = t
+        bar = progress_bar(ref_count - prev_ref_t, next_ref_t - prev_ref_t)
         text += f"До {next_ref_name}: {bar} {ref_count}/{next_ref_t}\n"
     else:
         text += "🏆 Максимальный реферальный уровень!\n"
@@ -611,12 +692,23 @@ async def confirm_order(call: types.CallbackQuery):
 
     set_order_status(order_id, "confirmed")
     await call.message.edit_reply_markup(None)
-    await call.message.reply("✅ Заказ подтверждён! Вейпкоины начислены.")
+    await call.message.reply("✅ Заказ подтверждён!")
     await call.answer("Выдача подтверждена")
 
+    # Записываем продажу и обновляем лояльность только сейчас
+    write_order_to_sales(order_id)
+
     uid = int(order.get("Покупатель_ID", 0))
+    contact = order.get("Контакт", "—")
+    final_total = int(order.get("Финальная_сумма", 0) or 0)
+    new_total = get_user_total(uid)
+    new_level, _ = get_loyalty(new_total)
+
+    confirm_text = "✅ Твой заказ подтверждён продавцом! Спасибо за покупку 🙌"
+    if new_level:
+        confirm_text += f"\n💎 Твой уровень лояльности: {new_level}"
     try:
-        await bot.send_message(uid, "✅ Твой заказ подтверждён продавцом! Спасибо за покупку 🙌")
+        await bot.send_message(uid, confirm_text)
     except Exception as e:
         logging.error(f"notify buyer confirm: {e}")
 
@@ -632,13 +724,15 @@ async def cancel_order(call: types.CallbackQuery):
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
-    if order.get("Статус") in ("confirmed", "cancelled"):
+    if order.get("Статус") in ("confirmed", "Отменен"):
         await call.answer("Заказ уже обработан", show_alert=True)
         return
 
-    set_order_status(order_id, "cancelled")
+    # Возвращаем товары на остаток
+    restore_order_stock(order_id)
+    set_order_status(order_id, "Отменен")
     await call.message.edit_reply_markup(None)
-    await call.message.reply("❌ Заказ отменён.")
+    await call.message.reply("❌ Заказ отменён. Товары возвращены на остаток.")
     await call.answer("Заказ отменён")
 
     uid = int(order.get("Покупатель_ID", 0))
@@ -876,6 +970,21 @@ async def get_contact(msg: types.Message, state: FSMContext):
 @dp.message_handler(state=OrderState.waiting_address)
 async def get_address(msg: types.Message, state: FSMContext):
     await state.update_data(address=msg.text)
+    await OrderState.waiting_comment.set()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment"))
+    await msg.answer("💬 Добавь комментарий к доставке (необязательно):", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data == "skip_comment", state=OrderState.waiting_comment)
+async def skip_comment(call: types.CallbackQuery, state: FSMContext):
+    await state.update_data(comment="")
+    await call.message.edit_reply_markup(None)
+    await OrderState.waiting_payment.set()
+    await show_payment_options(call.message, state)
+
+@dp.message_handler(state=OrderState.waiting_comment)
+async def get_comment(msg: types.Message, state: FSMContext):
+    await state.update_data(comment=msg.text.strip())
     await OrderState.waiting_payment.set()
     await show_payment_options(msg, state)
 
@@ -893,13 +1002,20 @@ async def show_payment_options(msg: types.Message, state: FSMContext):
     disc_sum    = int(raw_total * discount / 100)
     final_total = raw_total - disc_sum
 
+    order_data = await state.get_data()
+    delivery   = order_data.get("delivery", "pickup")
+    comment    = order_data.get("comment", "")
+
     text = f"💰 Сумма заказа: {raw_total:,}₽"
     if discount > 0:
         text += f"\n🎁 Скидка {level_name} (-{discount}%): -{disc_sum:,}₽\n✅ К оплате: {final_total:,}₽"
+    if comment:
+        text += f"\n💬 Комментарий: {comment}"
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("💳 Перевод на карту", callback_data="pay_card"))
-    kb.add(InlineKeyboardButton("💵 Наличные",         callback_data="pay_cash"))
+    if delivery != "courier":
+        kb.add(InlineKeyboardButton("💵 Наличные", callback_data="pay_cash"))
     await msg.answer(text, reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pay_"), state=OrderState.waiting_payment)
@@ -911,6 +1027,7 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
     delivery   = order_data.get("delivery", "pickup")
     contact    = order_data.get("contact", "—")
     address    = order_data.get("address", PICKUP_ADDRESS)
+    comment    = order_data.get("comment", "")
     await state.finish()
 
     if uid not in cart or not cart[uid]:
@@ -918,32 +1035,28 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         return
 
     data_gs     = products_ws.get_all_records()
-    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
     raw_total   = 0
     order_lines = []
+    items_for_json = []
     user_total  = get_user_total(uid)
     level_name, discount = get_loyalty(user_total)
 
     for pid, qty in list(cart[uid].items()):
         for idx, item in enumerate(data_gs):
             if item["ID"] == pid:
-                price = item["Цена (₽)"]
-                summ  = price * qty
+                price     = item["Цена (₽)"]
+                summ      = price * qty
                 raw_total += summ
-                order_lines.append(f"{item['Название']} × {qty} = {summ:,}₽")
+                puffs_str = f" {item['Затяжки']}" if item.get("Затяжки") else ""
+                order_lines.append(
+                    f"{item['Бренд']}{puffs_str} {item['Название']} х{qty} = {summ:,}₽"
+                )
+                # Резервируем товар (уменьшаем остаток)
                 products_ws.update_cell(idx + 2, 7, max(0, item["Остаток"] - qty))
-                sales_ws.append_row([
-                    now, uid, contact,
-                    item["Название"], qty, price, summ,
-                    "Доставка" if delivery == "courier" else "Самовывоз",
-                    address, "Перевод" if pay == "card" else "Наличные",
-                    discount, ""
-                ])
+                items_for_json.append({"id": pid, "qty": qty})
 
     disc_sum    = int(raw_total * discount / 100)
     final_total = raw_total - disc_sum
-    new_total   = update_user_total(uid, contact, final_total)
-    new_level, _= get_loyalty(new_total)
     cart[uid]   = {}
 
     pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
@@ -951,8 +1064,9 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
     summary        = "\n".join(order_lines)
     order_id       = f"{uid}_{int(time.time())}"
 
-    # Сохраняем заказ
-    save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay, summary)
+    # Сохраняем заказ (продажа запишется только после подтверждения продавцом)
+    save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay,
+               summary, json.dumps(items_for_json))
 
     user_text = f"✅ Заказ оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
     if discount > 0:
@@ -960,11 +1074,11 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
     user_text += (
         f"\n\n🚚 Получение: {delivery_label}\n"
         f"📍 Адрес: {address}\n"
-        f"💳 Оплата: {pay_label}\n\n"
-        f"Ожидай подтверждения от продавца 🙌"
+        f"💳 Оплата: {pay_label}"
     )
-    if new_level and new_level != level_name:
-        user_text += f"\n\n🎉 Новый уровень лояльности: {new_level}!"
+    if comment:
+        user_text += f"\n💬 Комментарий: {comment}"
+    user_text += "\n\nОжидай подтверждения от продавца 🙌"
 
     await call.message.edit_text(user_text)
 
@@ -981,6 +1095,8 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         f"📍 Адрес: {address}\n"
         f"💳 Оплата: {pay_label}"
     )
+    if comment:
+        seller_text += f"\n💬 Комментарий: {comment}"
 
     for seller_id in SELLER_IDS:
         try:
@@ -1001,6 +1117,7 @@ async def web_app_order(msg: types.Message):
         delivery = data.get("delivery", "pickup")
         pay      = data.get("pay", "card")
         items    = data.get("items", [])
+        comment  = data.get("comment", "")
 
         user_total  = get_user_total(uid)
         level_name, discount = get_loyalty(user_total)
@@ -1010,31 +1127,37 @@ async def web_app_order(msg: types.Message):
         disc_sum    = int(raw_total * discount / 100)
         final_total = raw_total - disc_sum
 
-        data_gs     = products_ws.get_all_records()
-        order_lines = []
+        data_gs        = products_ws.get_all_records()
+        order_lines    = []
+        items_for_json = []
 
         for it in items:
             summ = it["price"] * it["qty"]
-            order_lines.append(f"{it['name']} × {it['qty']} = {summ:,}₽")
+            # Ищем бренд и затяжки из таблицы товаров
+            brand_str = ""
+            puffs_str = ""
             for idx, row in enumerate(data_gs):
                 if row["ID"] == it["id"]:
+                    brand_str = row.get("Бренд", "")
+                    puffs_val = row.get("Затяжки", "")
+                    if puffs_val:
+                        puffs_str = f" {puffs_val}"
+                    # Резервируем товар
                     products_ws.update_cell(idx + 2, 7, max(0, row["Остаток"] - it["qty"]))
-            sales_ws.append_row([
-                now, uid, contact,
-                it["name"], it["qty"], it["price"], summ,
-                "Доставка" if delivery == "courier" else "Самовывоз",
-                address, "Перевод" if pay == "card" else "Наличные",
-                discount, final_total
-            ])
+                    break
+            order_lines.append(
+                f"{brand_str}{puffs_str} {it['name']} х{it['qty']} = {summ:,}₽"
+            )
+            items_for_json.append({"id": it["id"], "qty": it["qty"]})
 
-        new_total  = update_user_total(uid, contact, final_total)
-        new_level, _ = get_loyalty(new_total)
-        summary        = "\n".join(order_lines)
+        summary = "\n".join(order_lines)
         pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
         delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
         order_id       = f"{uid}_{int(time.time())}"
 
-        save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay, summary)
+        # Сохраняем заказ (продажа запишется только после подтверждения продавцом)
+        save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay,
+                   summary, json.dumps(items_for_json))
 
         user_text = f"✅ Заказ из Mini App оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
         if discount > 0:
@@ -1045,8 +1168,6 @@ async def web_app_order(msg: types.Message):
             f"💳 Оплата: {pay_label}\n\n"
             f"Ожидай подтверждения от продавца 🙌"
         )
-        if new_level and new_level != level_name:
-            user_text += f"\n\n🎉 Новый уровень лояльности: {new_level}!"
         await msg.answer(user_text)
 
         seller_text = (
@@ -1058,6 +1179,8 @@ async def web_app_order(msg: types.Message):
         if discount > 0:
             seller_text += f"\n🎁 Скидка {level_name}: -{disc_sum:,}₽\n✅ Итого: {final_total:,}₽"
         seller_text += f"\n\n🚚 Тип: {delivery_label}\n📍 Адрес: {address}\n💳 Оплата: {pay_label}"
+        if comment:
+            seller_text += f"\n💬 Комментарий: {comment}"
 
         for seller_id in SELLER_IDS:
             try:

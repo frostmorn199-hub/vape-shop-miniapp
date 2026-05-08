@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>VAPE SHOP</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <span class="header-title">💨 VAPE SHOP VRN</span>
+    <div class="header-btns">
+      <a href="game.html" class="game-btn">🎮 Играть</a>
+    </div>
+  </div>
+
+  <!-- LOYALTY BAR -->
+  <div id="loyalty-bar" class="loyalty-bar">
+    <div class="loyalty-info">
+      <span id="loyalty-label">Накопи 20 000₽ для Бронзы 🥉</span>
+      <span id="loyalty-total">0₽</span>
+    </div>
+    <div class="progress-track">
+      <div id="progress-fill" class="progress-fill"></div>
+    </div>
+  </div>
+
+  <!-- CATEGORY TABS (above nav, only for catalog) -->
+  <div class="tabs-bar" id="tabs-bar">
+    <div class="tabs" id="tabs"></div>
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-screen="catalog" onclick="showScreen('catalog', this)">
+      <span class="nav-icon">🏪</span>
+      <span class="nav-label">Каталог</span>
+    </button>
+    <button class="nav-btn" data-screen="cart" onclick="showScreen('cart', this)">
+      <span class="nav-icon">🛒</span>
+      <span class="nav-label">Корзина <span id="nav-cart-count" class="nav-badge hidden">0</span></span>
+    </button>
+    <button class="nav-btn" data-screen="loyalty" onclick="showScreen('loyalty', this)">
+      <span class="nav-icon">🎁</span>
+      <span class="nav-label">Лояльность</span>
+    </button>
+  </nav>
+
+  <!-- ========== ЭКРАН: КАТАЛОГ ========== -->
+  <div id="screen-catalog" class="screen active">
+    <div id="products-grid" class="products-grid">
+      <div class="placeholder">Загружаем товары…</div>
+    </div>
+  </div>
+
+  <!-- ========== ЭКРАН: КОРЗИНА ========== -->
+  <div id="screen-cart" class="screen">
+    <div class="screen-header">
+      <span class="screen-title">Корзина</span>
+    </div>
+    <div id="cart-items"></div>
+    <div id="cart-total-block"></div>
+    <div class="screen-footer">
+      <button class="btn-primary" onclick="showScreen('checkout', null)">Оформить заказ</button>
+    </div>
+  </div>
+
+  <!-- ========== ЭКРАН: ОФОРМЛЕНИЕ ========== -->
+  <div id="screen-checkout" class="screen">
+    <div class="screen-header">
+      <button class="back-btn" onclick="showScreen('cart', null)">← Назад</button>
+      <span class="screen-title">Оформление</span>
+    </div>
+    <div class="form-body">
+
+      <div class="field-group">
+        <label class="field-label">Контакт (@username или телефон)</label>
+        <input type="text" id="inp-contact" class="field-input" placeholder="@username или +7 999 …">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Способ получения</label>
+        <label class="radio-card">
+          <input type="radio" name="delivery" value="pickup" checked onchange="toggleAddress()">
+          <div class="radio-content">
+            <span class="radio-icon">🚶</span>
+            <div>
+              <div class="radio-title">Самовывоз</div>
+              <div class="radio-sub">Кривошеина 13/2</div>
+            </div>
+          </div>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="delivery" value="courier" onchange="toggleAddress()">
+          <div class="radio-content">
+            <span class="radio-icon">🚚</span>
+            <div>
+              <div class="radio-title">Доставка курьером</div>
+              <div class="radio-sub">Бесплатно от 2 000₽, иначе +250₽</div>
+            </div>
+          </div>
+        </label>
+      </div>
+
+      <div id="address-block" class="field-group hidden">
+        <label class="field-label">Адрес доставки</label>
+        <input type="text" id="inp-address" class="field-input" placeholder="Улица, дом, кв.">
+      </div>
+
+      <div id="comment-block" class="field-group hidden">
+        <label class="field-label">Комментарий к доставке (необязательно)</label>
+        <textarea id="inp-comment" class="field-input" rows="2" placeholder="Код домофона, этаж, удобное время…" style="resize:none"></textarea>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Способ оплаты</label>
+        <label class="radio-card">
+          <input type="radio" name="pay" value="card" checked>
+          <div class="radio-content">
+            <span class="radio-icon">💳</span>
+            <div class="radio-title">Перевод на карту</div>
+          </div>
+        </label>
+        <label id="cash-option" class="radio-card">
+          <input type="radio" name="pay" value="cash">
+          <div class="radio-content">
+            <span class="radio-icon">💵</span>
+            <div class="radio-title">Наличные</div>
+          </div>
+        </label>
+      </div>
+
+      <div id="vc-balance-block" class="field-group hidden">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13px;color:var(--hint);">
+          🪙 Твой баланс: <strong id="checkout-vc" style="color:var(--accent)">0 VC</strong>
+        </div>
+      </div>
+
+      <div id="order-summary" class="order-summary"></div>
+
+      <button class="btn-primary btn-confirm" onclick="submitOrder()">✅ Подтвердить заказ</button>
+    </div>
+  </div>
+
+  <!-- ========== ЭКРАН: ЛОЯЛЬНОСТЬ ========== -->
+  <div id="screen-loyalty" class="screen">
+    <div class="screen-header">
+      <span class="screen-title">🎁 Система лояльности</span>
+    </div>
+    <div class="loyalty-screen-body">
+
+      <!-- Вейпкоины -->
+      <div class="loy-card coins-card">
+        <div class="loy-card-title">🪙 Вейпкоины</div>
+        <div class="coins-amount" id="loy-coins">0 VC</div>
+        <div class="coins-hint">1 VC = 1₽ · Оплата специальных товаров</div>
+      </div>
+
+      <!-- Реферальная программа -->
+      <div class="loy-section-title">🤝 Реферальная программа</div>
+
+      <div class="loy-card">
+        <div class="loy-level-row">
+          <span id="ref-level-name" class="loy-badge ref-badge">Нет уровня</span>
+          <span id="ref-count-text" class="loy-hint">0 рефералов</span>
+        </div>
+        <div class="loy-progress-label">
+          <span id="ref-progress-label">Пригласи 1 друга для Бронзы 🥉</span>
+          <span id="ref-pct-text"></span>
+        </div>
+        <div class="progress-track">
+          <div id="ref-progress-fill" class="progress-fill ref-fill"></div>
+        </div>
+      </div>
+
+      <!-- Реферальный код -->
+      <div class="loy-card ref-code-card">
+        <div class="loy-card-title">📎 Твой реферальный код</div>
+        <div class="ref-code-block">
+          <span class="ref-code-text" id="ref-code-display">—</span>
+        </div>
+        <div class="ref-code-actions">
+          <button class="ref-btn" onclick="copyRefCode()">📋 Копировать</button>
+          <button class="ref-btn ref-btn-share" onclick="shareRefCode()">📤 Поделиться</button>
+        </div>
+        <div class="ref-code-hint">Друг вводит код в боте → получает 100 VC<br>Ты получаешь % с его покупок 💰</div>
+      </div>
+
+      <!-- Реферальные уровни -->
+      <div class="loy-levels-grid" id="ref-levels-grid"></div>
+
+      <!-- Скидочная программа -->
+      <div class="loy-section-title">💎 Программа скидок</div>
+
+      <div class="loy-card">
+        <div class="loy-level-row">
+          <span id="spend-level-name" class="loy-badge spend-badge">Нет уровня</span>
+          <span id="spend-total-text" class="loy-hint">0₽ потрачено</span>
+        </div>
+        <div class="loy-progress-label">
+          <span id="spend-progress-label">Накопи 20 000₽ для Бронзы 🥉</span>
+          <span id="spend-disc-text"></span>
+        </div>
+        <div class="progress-track">
+          <div id="spend-progress-fill" class="progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Уровни скидок -->
+      <div class="loy-levels-grid" id="spend-levels-grid"></div>
+
+    </div>
+  </div>
+
+  <!-- FAB корзина удалён — навигация через bottom-nav -->
+  <script src="app.js"></script>
+</body>
+</html>

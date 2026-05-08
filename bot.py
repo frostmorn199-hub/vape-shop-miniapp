@@ -20,7 +20,7 @@ API_TOKEN = "8751207190:AAEm1ZeGSJQn0LCKKIq6rd_GZxAChr2IhR0"
 ADMIN_ID = 525971484
 SELLER_IDS = [8784410820, 525971484, 5710542507]
 PICKUP_ADDRESS = "Кривошеина 13/2"
-WEBAPP_URL = "https://vape-shop-miniapp.onrender.com"
+WEBAPP_URL = "https://frostmorn199-hub.github.io/vape-shop-miniapp"
 MIN_REFERRAL_PURCHASE = 950
 REFERRAL_BONUS_COINS = 100
 DELIVERY_FEE = 250
@@ -1164,7 +1164,7 @@ async def skip_comment(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(comment="")
     await call.message.edit_reply_markup(None)
     await OrderState.waiting_payment.set()
-    await show_payment_options(call.message, state)
+    await show_payment_options(call.message, state, uid=call.from_user.id)
 
 @dp.message_handler(state=OrderState.waiting_comment)
 async def get_comment(msg: types.Message, state: FSMContext):
@@ -1172,8 +1172,9 @@ async def get_comment(msg: types.Message, state: FSMContext):
     await OrderState.waiting_payment.set()
     await show_payment_options(msg, state)
 
-async def show_payment_options(msg: types.Message, state: FSMContext):
-    uid = msg.from_user.id
+async def show_payment_options(msg: types.Message, state: FSMContext, uid: int = None):
+    if uid is None:
+        uid = msg.from_user.id
     user_total = get_user_total(uid)
     level_name, discount = get_loyalty(user_total)
 

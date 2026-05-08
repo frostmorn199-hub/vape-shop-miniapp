@@ -79,6 +79,10 @@ def get_referral_level(count: int):
     return None, 0
 
 
+@app.route("/api/version")
+def api_version():
+    return jsonify({"version": "3.0", "build": "2026-05-09"})
+
 @app.route("/")
 def index():
     return send_from_directory(_static, "index.html")

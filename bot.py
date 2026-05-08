@@ -10,21 +10,38 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import logging
 import json
+import random
+import string
+import time
 
 logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = "8751207190:AAEm1ZeGSJQn0LCKKIq6rd_GZxAChr2IhR0"
 ADMIN_ID = 525971484
-SELLER_IDS = [ADMIN_ID]  # добавить ID продавцов позже
+SELLER_IDS = [8784410820, 525971484, 5710542507]
 PICKUP_ADDRESS = "Кривошеина 13/2"
 WEBAPP_URL = "https://vape-shop-miniapp.onrender.com"
+MIN_REFERRAL_PURCHASE = 950
+REFERRAL_BONUS_COINS = 100
 
+# Скидочная программа (по сумме покупок)
 LOYALTY_LEVELS = [
     (300_000, "Платина 💎", 15),
-    (100_000, "Золото 🥇", 10),
-    (50_000,  "Серебро 🥈", 7),
-    (20_000,  "Бронза 🥉",  5),
+    (100_000, "Золото 🥇",  10),
+    (50_000,  "Серебро 🥈",  7),
+    (20_000,  "Бронза 🥉",   5),
 ]
+
+# Реферальная программа (по числу активных рефералов)
+REFERRAL_LEVELS = [
+    (100, "Платина 🔥", 10),
+    (40,  "Золото 🥇",   7),
+    (15,  "Серебро 🥈",  5),
+    (1,   "Бронза 🥉",   3),
+]
+
+
+# ── Скидочная система ───────────────────────────────────────
 
 def get_loyalty(total: int):
     for threshold, name, discount in LOYALTY_LEVELS:
@@ -33,49 +50,34 @@ def get_loyalty(total: int):
     return None, 0
 
 def next_level_info(total: int):
-    for threshold, name, _ in LOYALTY_LEVELS:
+    for threshold, name, _ in sorted(LOYALTY_LEVELS, key=lambda x: x[0]):
         if total < threshold:
             return threshold, name
     return None, None
 
 def progress_bar(current: int, target: int, length: int = 10) -> str:
-    filled = int((current / target) * length)
+    if target <= 0:
+        return "▓" * length
+    filled = min(int((current / target) * length), length)
     return "▓" * filled + "░" * (length - filled)
 
-def loyalty_full_text(uid: int) -> str:
-    total = get_user_total(uid)
-    level_name, discount = get_loyalty(total)
-    next_t, next_name = next_level_info(total)
 
-    # Нижняя граница текущего диапазона (0 если ещё нет уровня)
-    sorted_asc = sorted(LOYALTY_LEVELS, key=lambda x: x[0])
-    prev_t = 0
-    for t, n, d in sorted_asc:
-        if t <= total:
-            prev_t = t
+# ── Реферальная система ─────────────────────────────────────
 
-    text = f"💰 Потрачено: {total:,}₽\n\n"
+def get_referral_level(count: int):
+    for threshold, name, pct in REFERRAL_LEVELS:
+        if count >= threshold:
+            return name, pct
+    return None, 0
 
-    if level_name:
-        text += f"Твой уровень: {level_name} — скидка {discount}%\n"
-    else:
-        text += "Уровень: нет\n"
+def next_referral_level_info(count: int):
+    for threshold, name, _ in REFERRAL_LEVELS:
+        if count < threshold:
+            return threshold, name
+    return None, None
 
-    if next_t:
-        remaining = next_t - total
-        span = next_t - prev_t
-        bar = progress_bar(total - prev_t, span)
-        text += f"\nДо {next_name}:\n{bar} осталось {remaining:,}₽\n"
-    else:
-        text += "\n🏆 Максимальный уровень достигнут!\n"
 
-    text += "\n📊 Все уровни:\n"
-    for threshold, name, disc in sorted_asc:
-        mark = "✅" if total >= threshold else "⬜"
-        text += f"{mark} {name} — от {threshold:,}₽ ({disc}%)\n"
-
-    return text
-
+# ── Инициализация бота и таблиц ─────────────────────────────
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -88,46 +90,421 @@ spreadsheet = gs_client.open("VAPE SHOP")
 products_ws = spreadsheet.worksheet("Товары")
 sales_ws    = spreadsheet.worksheet("Продажи")
 clients_ws  = spreadsheet.worksheet("Клиенты")
+referrals_ws = None
+orders_ws    = None
+partners_ws  = None
 
-cart = {}
+cart     = {}
 user_qty = {}
 
 
 class OrderState(StatesGroup):
-    waiting_contact  = State()
-    waiting_address  = State()
-    waiting_payment  = State()
+    waiting_contact = State()
+    waiting_address = State()
+    waiting_payment = State()
+
+class PromoState(StatesGroup):
+    waiting_promo = State()
 
 
-# --- ЛОЯЛЬНОСТЬ ---
+# ── Инициализация листов ────────────────────────────────────
 
-def get_user_total(uid: int) -> int:
+def init_sheets():
+    global referrals_ws, orders_ws
     try:
-        for r in clients_ws.get_all_records():
-            if int(r.get("ID", 0)) == uid:
-                return int(r.get("Итого", 0))
-    except Exception as e:
-        logging.error(f"get_user_total: {e}")
-    return 0
+        referrals_ws = spreadsheet.worksheet("Рефералы")
+    except gspread.exceptions.WorksheetNotFound:
+        referrals_ws = spreadsheet.add_worksheet("Рефералы", rows=1000, cols=4)
+        referrals_ws.append_row(["Пригласивший_ID", "Приглашенный_ID", "Дата", "Активирован"])
 
-def update_user_total(uid: int, contact: str, amount: int) -> int:
+    try:
+        orders_ws = spreadsheet.worksheet("Заказы")
+    except gspread.exceptions.WorksheetNotFound:
+        orders_ws = spreadsheet.add_worksheet("Заказы", rows=1000, cols=11)
+        orders_ws.append_row([
+            "Заказ_ID", "Покупатель_ID", "Контакт", "Дата",
+            "Сумма", "Финальная_сумма", "Тип", "Адрес", "Оплата", "Статус", "Состав"
+        ])
+
+    global partners_ws
+    try:
+        partners_ws = spreadsheet.worksheet("Партнёры")
+    except gspread.exceptions.WorksheetNotFound:
+        partners_ws = spreadsheet.add_worksheet("Партнёры", rows=1000, cols=6)
+        partners_ws.append_row(["ID", "Контакт", "Промокод", "Приглашено_всего", "Активных_рефералов", "Дата_регистрации"])
+
+    # Добавляем новые заголовки в Клиенты если их нет
+    try:
+        headers = clients_ws.row_values(1)
+        new_cols = {5: "Промокод", 6: "Реферер_ID", 7: "Вейпкоины", 8: "Промо_активирован"}
+        for col_0, name in new_cols.items():
+            if len(headers) <= col_0 or not headers[col_0]:
+                clients_ws.update_cell(1, col_0 + 1, name)
+    except Exception as e:
+        logging.error(f"init_sheets headers: {e}")
+
+
+# ── Клиенты: вспомогательные функции ───────────────────────
+
+def _generate_unique_code() -> str:
+    try:
+        existing = {r.get("Промокод", "") for r in clients_ws.get_all_records()}
+        while True:
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            if code not in existing:
+                return code
+    except Exception:
+        return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+def _find_client_row(uid: int):
     try:
         records = clients_ws.get_all_records()
-        now = datetime.now().strftime("%Y-%m-%d")
         for idx, r in enumerate(records):
             if int(r.get("ID", 0)) == uid:
-                new_total = int(r.get("Итого", 0)) + amount
-                clients_ws.update_cell(idx + 2, 3, new_total)
-                clients_ws.update_cell(idx + 2, 5, now)
-                return new_total
-        clients_ws.append_row([uid, contact, amount, now, now])
-        return amount
+                return idx + 2, r
     except Exception as e:
-        logging.error(f"update_user_total: {e}")
-        return 0
+        logging.error(f"_find_client_row: {e}")
+    return None, None
+
+def ensure_client(uid: int, contact: str = "—") -> str:
+    """Убедиться что юзер есть в Клиентах. Вернуть его реферальный код."""
+    row_idx, rec = _find_client_row(uid)
+    if row_idx:
+        code = rec.get("Промокод", "")
+        if not code:
+            code = _generate_unique_code()
+            clients_ws.update_cell(row_idx, 6, code)
+        return code
+    code = _generate_unique_code()
+    now = datetime.now().strftime("%Y-%m-%d")
+    clients_ws.append_row([uid, contact, 0, now, now, code, "", 0, 0])
+    update_partners_row(uid)
+    return code
+
+def get_user_total(uid: int) -> int:
+    _, rec = _find_client_row(uid)
+    return int(rec.get("Итого", 0) or 0) if rec else 0
+
+def update_user_total(uid: int, contact: str, amount: int) -> int:
+    row_idx, rec = _find_client_row(uid)
+    now = datetime.now().strftime("%Y-%m-%d")
+    if row_idx:
+        new_total = int(rec.get("Итого", 0) or 0) + amount
+        clients_ws.update_cell(row_idx, 3, new_total)
+        clients_ws.update_cell(row_idx, 5, now)
+        return new_total
+    code = _generate_unique_code()
+    clients_ws.append_row([uid, contact, amount, now, now, code, "", 0, 0])
+    return amount
+
+def get_vaypecoins(uid: int) -> int:
+    _, rec = _find_client_row(uid)
+    return int(rec.get("Вейпкоины", 0) or 0) if rec else 0
+
+def add_vaypecoins(uid: int, amount: int) -> int:
+    row_idx, rec = _find_client_row(uid)
+    if row_idx:
+        current = int(rec.get("Вейпкоины", 0) or 0)
+        clients_ws.update_cell(row_idx, 8, current + amount)
+        return current + amount
+    return 0
+
+def get_referral_code(uid: int) -> str:
+    _, rec = _find_client_row(uid)
+    return rec.get("Промокод", "") if rec else ""
+
+def get_referrer_id(uid: int):
+    _, rec = _find_client_row(uid)
+    if rec:
+        ref = rec.get("Реферер_ID", "")
+        try:
+            return int(ref) if ref else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+def is_promo_activated(uid: int) -> bool:
+    _, rec = _find_client_row(uid)
+    return int(rec.get("Промо_активирован", 0) or 0) == 1 if rec else False
+
+def set_promo_activated(uid: int):
+    row_idx, _ = _find_client_row(uid)
+    if row_idx:
+        clients_ws.update_cell(row_idx, 9, 1)
+
+def set_referrer(uid: int, referrer_id: int):
+    row_idx, _ = _find_client_row(uid)
+    if row_idx:
+        clients_ws.update_cell(row_idx, 7, referrer_id)
 
 
-# --- МЕНЮ ---
+# ── Партнёры (отдельный лист) ───────────────────────────────
+
+def update_partners_row(uid: int):
+    if not partners_ws or not referrals_ws:
+        return
+    try:
+        _, rec = _find_client_row(uid)
+        if not rec:
+            return
+        contact  = rec.get("Контакт", "—")
+        promo    = rec.get("Промокод", "")
+        reg_date = rec.get("Дата_регистрации", "")
+
+        all_refs     = referrals_ws.get_all_records()
+        total_inv    = sum(1 for r in all_refs if int(r.get("Пригласивший_ID", 0)) == uid)
+        active_inv   = sum(1 for r in all_refs
+                          if int(r.get("Пригласивший_ID", 0)) == uid
+                          and int(r.get("Активирован", 0)) == 1)
+
+        all_partners = partners_ws.get_all_records()
+        for idx, p in enumerate(all_partners):
+            if int(p.get("ID", 0)) == uid:
+                partners_ws.update(f"A{idx+2}:F{idx+2}",
+                                   [[uid, contact, promo, total_inv, active_inv, reg_date]])
+                return
+        partners_ws.append_row([uid, contact, promo, total_inv, active_inv, reg_date])
+    except Exception as e:
+        logging.error(f"update_partners_row: {e}")
+
+
+# ── Рефералы ────────────────────────────────────────────────
+
+def get_active_referral_count(uid: int) -> int:
+    try:
+        records = referrals_ws.get_all_records()
+        return sum(
+            1 for r in records
+            if int(r.get("Пригласивший_ID", 0)) == uid
+            and int(r.get("Активирован", 0)) == 1
+        )
+    except Exception as e:
+        logging.error(f"get_active_referral_count: {e}")
+    return 0
+
+def activate_referral_record(referred_uid: int):
+    try:
+        records = referrals_ws.get_all_records()
+        for idx, r in enumerate(records):
+            if (int(r.get("Приглашенный_ID", 0)) == referred_uid
+                    and int(r.get("Активирован", 0)) == 0):
+                referrals_ws.update_cell(idx + 2, 4, 1)
+                inviter_id = int(r.get("Пригласивший_ID", 0))
+                if inviter_id:
+                    update_partners_row(inviter_id)
+                return
+    except Exception as e:
+        logging.error(f"activate_referral_record: {e}")
+
+def find_code_owner(code: str):
+    try:
+        for r in clients_ws.get_all_records():
+            if r.get("Промокод", "").upper() == code.upper():
+                return int(r.get("ID", 0))
+    except Exception as e:
+        logging.error(f"find_code_owner: {e}")
+    return None
+
+def apply_promo_code(uid: int, code: str) -> tuple:
+    owner_id = find_code_owner(code)
+    if not owner_id:
+        return False, "❌ Промокод не найден."
+    if owner_id == uid:
+        return False, "❌ Нельзя использовать собственный промокод."
+    existing = get_referrer_id(uid)
+    if existing:
+        return False, "❌ Ты уже использовал реферальный промокод."
+    set_referrer(uid, owner_id)
+    now = datetime.now().strftime("%Y-%m-%d")
+    referrals_ws.append_row([owner_id, uid, now, 0])
+    update_partners_row(owner_id)
+    return True, (
+        f"✅ Промокод принят!\n\n"
+        f"Сделай первую покупку на {MIN_REFERRAL_PURCHASE}₽+ и получи "
+        f"{REFERRAL_BONUS_COINS} вейпкоинов на баланс 🎁"
+    )
+
+
+# ── Заказы ──────────────────────────────────────────────────
+
+def save_order(order_id: str, uid: int, contact: str, raw_total: int, final_total: int,
+               delivery: str, address: str, pay: str, summary: str):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    orders_ws.append_row([
+        order_id, uid, contact, now, raw_total, final_total,
+        "Доставка" if delivery == "courier" else "Самовывоз",
+        address, "Перевод" if pay == "card" else "Наличные",
+        "pending", summary
+    ])
+
+def get_order(order_id: str):
+    try:
+        for r in orders_ws.get_all_records():
+            if str(r.get("Заказ_ID", "")) == order_id:
+                return r
+    except Exception as e:
+        logging.error(f"get_order: {e}")
+    return None
+
+def set_order_status(order_id: str, status: str):
+    try:
+        records = orders_ws.get_all_records()
+        for idx, r in enumerate(records):
+            if str(r.get("Заказ_ID", "")) == order_id:
+                orders_ws.update_cell(idx + 2, 10, status)
+                return True
+    except Exception as e:
+        logging.error(f"set_order_status: {e}")
+    return False
+
+def seller_kb(order_id: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("✅ Подтвердить выдачу", callback_data=f"order_confirm_{order_id}"),
+        InlineKeyboardButton("❌ Отменить",            callback_data=f"order_cancel_{order_id}")
+    )
+    return kb
+
+
+# ── Начисление вейпкоинов после подтверждения ───────────────
+
+async def process_order_confirmed(order_id: str):
+    order = get_order(order_id)
+    if not order:
+        return
+
+    uid         = int(order.get("Покупатель_ID", 0))
+    final_total = int(order.get("Финальная_сумма", 0))
+    contact     = order.get("Контакт", "—")
+    referrer_id = get_referrer_id(uid)
+
+    if not referrer_id:
+        return
+
+    if not is_promo_activated(uid):
+        if final_total >= MIN_REFERRAL_PURCHASE:
+            # Активируем промокод
+            set_promo_activated(uid)
+            activate_referral_record(uid)
+            add_vaypecoins(uid, REFERRAL_BONUS_COINS)
+
+            # Начисляем кэшбек пригласившему
+            ref_count = get_active_referral_count(referrer_id)
+            _, pct = get_referral_level(ref_count)
+            cashback = int(final_total * pct / 100)
+            new_coins = add_vaypecoins(referrer_id, cashback) if cashback > 0 else get_vaypecoins(referrer_id)
+
+            ref_level_name, _ = get_referral_level(ref_count)
+            level_text = f" (уровень: {ref_level_name})" if ref_level_name else ""
+
+            try:
+                await bot.send_message(
+                    uid,
+                    f"🎉 Промокод активирован!\n"
+                    f"+{REFERRAL_BONUS_COINS} вейпкоинов на баланс!\n"
+                    f"💎 Баланс: {get_vaypecoins(uid)} VC"
+                )
+            except Exception as e:
+                logging.error(f"notify referred: {e}")
+
+            if cashback > 0:
+                try:
+                    await bot.send_message(
+                        referrer_id,
+                        f"🎉 Твой реферал {contact} сделал первую покупку!\n"
+                        f"💰 +{cashback} VC ({pct}% от {final_total:,}₽)\n"
+                        f"💎 Баланс: {new_coins} VC{level_text}"
+                    )
+                except Exception as e:
+                    logging.error(f"notify referrer: {e}")
+        else:
+            try:
+                await bot.send_message(
+                    uid,
+                    f"ℹ️ Для активации промокода нужна покупка на {MIN_REFERRAL_PURCHASE}₽+.\n"
+                    f"Твоя покупка: {final_total}₽"
+                )
+            except Exception as e:
+                logging.error(f"notify promo not activated: {e}")
+    else:
+        # Промокод уже активен — начисляем кэшбек
+        ref_count = get_active_referral_count(referrer_id)
+        _, pct = get_referral_level(ref_count)
+        cashback = int(final_total * pct / 100)
+        if cashback > 0:
+            new_coins = add_vaypecoins(referrer_id, cashback)
+            ref_level_name, _ = get_referral_level(ref_count)
+            level_text = f" (уровень: {ref_level_name})" if ref_level_name else ""
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"💰 Твой реферал {contact} оплатил заказ!\n"
+                    f"+{cashback} VC ({pct}% от {final_total:,}₽)\n"
+                    f"💎 Баланс: {new_coins} VC{level_text}"
+                )
+            except Exception as e:
+                logging.error(f"notify referrer ongoing: {e}")
+
+
+# ── Текст лояльности ────────────────────────────────────────
+
+def loyalty_full_text(uid: int) -> str:
+    # Скидочная программа
+    total = get_user_total(uid)
+    level_name, discount = get_loyalty(total)
+    next_t, next_name = next_level_info(total)
+
+    sorted_asc = sorted(LOYALTY_LEVELS, key=lambda x: x[0])
+    prev_t = 0
+    for t, n, d in sorted_asc:
+        if t <= total:
+            prev_t = t
+
+    text = "💎 СИСТЕМА ЛОЯЛЬНОСТИ\n\n"
+    text += f"💰 Потрачено: {total:,}₽\n"
+    text += f"Уровень: {level_name} — скидка {discount}%\n" if level_name else "Уровень: нет\n"
+    if next_t:
+        bar = progress_bar(total - prev_t, next_t - prev_t)
+        text += f"До {next_name}: {bar} осталось {next_t - total:,}₽\n"
+    else:
+        text += "🏆 Максимальный уровень!\n"
+
+    text += "\n📊 Уровни скидок:\n"
+    for threshold, name, disc in sorted_asc:
+        mark = "✅" if total >= threshold else "⬜"
+        text += f"{mark} {name} — от {threshold:,}₽ ({disc}% скидки)\n"
+
+    # Вейпкоины
+    coins = get_vaypecoins(uid)
+    text += f"\n🪙 ВЕЙПКОИНЫ: {coins} VC\n"
+    text += "1 VC = 1₽ (оплата специальных товаров)\n"
+
+    # Реферальная программа
+    ref_code = get_referral_code(uid) or ensure_client(uid)
+    ref_count = get_active_referral_count(uid)
+    ref_level_name, ref_pct = get_referral_level(ref_count)
+    next_ref_t, next_ref_name = next_referral_level_info(ref_count)
+
+    text += "\n🤝 РЕФЕРАЛЬНАЯ ПРОГРАММА\n"
+    text += f"Твой код: `{ref_code}`\n"
+    text += f"Активных рефералов: {ref_count}\n"
+    text += f"Уровень: {ref_level_name} — {ref_pct}% кэшбек\n" if ref_level_name else "Уровень: нет (пригласи друга!)\n"
+    if next_ref_t:
+        bar = progress_bar(ref_count, next_ref_t)
+        text += f"До {next_ref_name}: {bar} {ref_count}/{next_ref_t}\n"
+    else:
+        text += "🏆 Максимальный реферальный уровень!\n"
+
+    sorted_ref = sorted(REFERRAL_LEVELS, key=lambda x: x[0])
+    text += "\n📊 Реферальные уровни:\n"
+    for threshold, name, pct in sorted_ref:
+        mark = "✅" if ref_count >= threshold else "⬜"
+        text += f"{mark} {name} — от {threshold} рефералов ({pct}%)\n"
+
+    return text
+
+
+# ── Меню ────────────────────────────────────────────────────
 
 def main_menu():
     kb = InlineKeyboardMarkup()
@@ -138,7 +515,10 @@ def main_menu():
     kb.add(InlineKeyboardButton("🚬 Табак",      callback_data="cat_Табак"))
     kb.add(InlineKeyboardButton("⚙️ Устройства", callback_data="cat_Устройство"))
     kb.add(InlineKeyboardButton("🛒 Корзина",    callback_data="open_cart"))
-    kb.add(InlineKeyboardButton("🎁 Моя лояльность", callback_data="my_loyalty"))
+    kb.add(
+        InlineKeyboardButton("🎁 Моя лояльность",    callback_data="my_loyalty"),
+        InlineKeyboardButton("🎟️ Промокод",          callback_data="enter_promo")
+    )
     return kb
 
 def webapp_keyboard():
@@ -147,32 +527,20 @@ def webapp_keyboard():
         kb.add(KeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
     return kb
 
-def loyalty_text(uid: int) -> str:
-    total = get_user_total(uid)
-    level_name, discount = get_loyalty(total)
-    next_t, next_name = next_level_info(total)
-    if level_name:
-        text = f"Твой уровень: {level_name} — скидка {discount}%\n"
-        if next_t:
-            text += f"До {next_name}: {next_t - total:,}₽\n"
-        return text
-    if next_t:
-        return f"Накопи {next_t - total:,}₽ для уровня {next_name} 🎁\n"
-    return ""
 
+# ── Хэндлеры: старт ─────────────────────────────────────────
 
 @dp.message_handler(commands=["start"], state="*")
 async def start(msg: types.Message, state: FSMContext):
     await state.finish()
-    text = "Добро пожаловать в VAPE SHOP 💨\n\n" + loyalty_text(msg.from_user.id)
-    # Постоянная кнопка Mini App под полем ввода
-    await msg.answer(text, reply_markup=webapp_keyboard())
-    # Инлайн-меню с категориями
+    contact = f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id)
+    ensure_client(msg.from_user.id, contact)
+    await msg.answer("Добро пожаловать в VAPE SHOP VRN 💨\nПриятных покупок 🛒", reply_markup=webapp_keyboard())
     await msg.answer("Выбери раздел:", reply_markup=main_menu())
 
 @dp.message_handler(commands=["loyalty"], state="*")
 async def loyalty_cmd(msg: types.Message):
-    await msg.answer(loyalty_full_text(msg.from_user.id))
+    await msg.answer(loyalty_full_text(msg.from_user.id), parse_mode="Markdown")
 
 @dp.message_handler(commands=["app"], state="*")
 async def app_cmd(msg: types.Message):
@@ -190,10 +558,7 @@ async def cart_cmd(msg: types.Message):
 @dp.callback_query_handler(lambda c: c.data == "my_loyalty")
 async def my_loyalty_callback(call: types.CallbackQuery):
     await call.answer()
-    await call.message.answer(loyalty_full_text(call.from_user.id))
-
-
-# --- НАЗАД ---
+    await call.message.answer(loyalty_full_text(call.from_user.id), parse_mode="Markdown")
 
 @dp.callback_query_handler(lambda c: c.data == "back_main", state="*")
 async def back(call: types.CallbackQuery, state: FSMContext):
@@ -201,7 +566,89 @@ async def back(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text("Главное меню", reply_markup=main_menu())
 
 
-# --- КАТЕГОРИИ ---
+# ── Промокод ────────────────────────────────────────────────
+
+@dp.callback_query_handler(lambda c: c.data == "enter_promo", state="*")
+async def enter_promo(call: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await call.answer()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_promo"))
+    await PromoState.waiting_promo.set()
+    await call.message.answer("Введи реферальный промокод друга:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_promo", state=PromoState.waiting_promo)
+async def cancel_promo(call: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await call.answer("Отменено")
+    await call.message.edit_reply_markup(None)
+
+@dp.message_handler(state=PromoState.waiting_promo)
+async def process_promo(msg: types.Message, state: FSMContext):
+    await state.finish()
+    code = msg.text.strip().upper()
+    contact = f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id)
+    ensure_client(msg.from_user.id, contact)
+    success, text = apply_promo_code(msg.from_user.id, code)
+    await msg.answer(text)
+
+
+# ── Подтверждение заказа продавцом ──────────────────────────
+
+@dp.callback_query_handler(lambda c: c.data.startswith("order_confirm_"))
+async def confirm_order(call: types.CallbackQuery):
+    if call.from_user.id not in SELLER_IDS:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    order_id = call.data[len("order_confirm_"):]
+    order = get_order(order_id)
+    if not order:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("Статус") == "confirmed":
+        await call.answer("Заказ уже подтверждён", show_alert=True)
+        return
+
+    set_order_status(order_id, "confirmed")
+    await call.message.edit_reply_markup(None)
+    await call.message.reply("✅ Заказ подтверждён! Вейпкоины начислены.")
+    await call.answer("Выдача подтверждена")
+
+    uid = int(order.get("Покупатель_ID", 0))
+    try:
+        await bot.send_message(uid, "✅ Твой заказ подтверждён продавцом! Спасибо за покупку 🙌")
+    except Exception as e:
+        logging.error(f"notify buyer confirm: {e}")
+
+    await process_order_confirmed(order_id)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("order_cancel_"))
+async def cancel_order(call: types.CallbackQuery):
+    if call.from_user.id not in SELLER_IDS:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    order_id = call.data[len("order_cancel_"):]
+    order = get_order(order_id)
+    if not order:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    if order.get("Статус") in ("confirmed", "cancelled"):
+        await call.answer("Заказ уже обработан", show_alert=True)
+        return
+
+    set_order_status(order_id, "cancelled")
+    await call.message.edit_reply_markup(None)
+    await call.message.reply("❌ Заказ отменён.")
+    await call.answer("Заказ отменён")
+
+    uid = int(order.get("Покупатель_ID", 0))
+    try:
+        await bot.send_message(uid, "❌ Твой заказ был отменён. Свяжись с нами для уточнения.")
+    except Exception as e:
+        logging.error(f"notify buyer cancel: {e}")
+
+
+# ── Каталог ─────────────────────────────────────────────────
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cat_"))
 async def brands_handler(call: types.CallbackQuery):
@@ -216,9 +663,6 @@ async def brands_handler(call: types.CallbackQuery):
         kb.add(InlineKeyboardButton(b, callback_data=f"brand_{category}|{b}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
     await call.message.edit_text("Выбери бренд:", reply_markup=kb)
-
-
-# --- ЗАТЯЖКИ ---
 
 @dp.callback_query_handler(lambda c: c.data.startswith("brand_"))
 async def puffs_handler(call: types.CallbackQuery):
@@ -237,9 +681,6 @@ async def puffs_handler(call: types.CallbackQuery):
         kb.add(InlineKeyboardButton(f"{p} тяг", callback_data=f"puffs_{category}|{brand}|{p}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cat_{category}"))
     await call.message.edit_text("Выбери затяжки:", reply_markup=kb)
-
-
-# --- ТОВАРЫ ---
 
 @dp.callback_query_handler(lambda c: c.data.startswith("puffs_"))
 async def show_products(call: types.CallbackQuery):
@@ -262,7 +703,7 @@ async def show_products_direct(call: types.CallbackQuery, category: str, brand: 
     await call.message.edit_text("Выбери товар:", reply_markup=kb)
 
 
-# --- КАРТОЧКА ---
+# ── Карточка товара ─────────────────────────────────────────
 
 def item_keyboard(pid: int, qty: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
@@ -272,8 +713,8 @@ def item_keyboard(pid: int, qty: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("➕", callback_data=f"plus_{pid}")
     )
     kb.add(InlineKeyboardButton("🛒 В корзину", callback_data=f"add_{pid}"))
-    kb.add(InlineKeyboardButton("🛒 Корзина", callback_data="open_cart"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
+    kb.add(InlineKeyboardButton("🛒 Корзина",   callback_data="open_cart"))
+    kb.add(InlineKeyboardButton("⬅️ Назад",     callback_data="back_main"))
     return kb
 
 @dp.callback_query_handler(lambda c: c.data.startswith("item_"))
@@ -310,7 +751,7 @@ async def noop(call: types.CallbackQuery):
     await call.answer()
 
 
-# --- КОРЗИНА ---
+# ── Корзина ─────────────────────────────────────────────────
 
 @dp.callback_query_handler(lambda c: c.data.startswith("add_"))
 async def add_to_cart(call: types.CallbackQuery):
@@ -345,7 +786,7 @@ async def show_cart(msg: types.Message, uid: int):
         for i in data:
             if i["ID"] == pid:
                 price = i["Цена (₽)"]
-                summ = price * qty
+                summ  = price * qty
                 raw_total += summ
                 text += f"{i['Название']}\n{qty} × {price}₽ = {summ}₽\n\n"
                 kb.add(InlineKeyboardButton(f"❌ {i['Название']}", callback_data=f"remove_{pid}"))
@@ -358,6 +799,10 @@ async def show_cart(msg: types.Message, uid: int):
         text += f"✅ Итого: {raw_total - disc_sum:,}₽"
     else:
         text += f"💰 Итого: {raw_total:,}₽"
+
+    coins = get_vaypecoins(uid)
+    if coins > 0:
+        text += f"\n🪙 Вейпкоины: {coins} VC"
 
     kb.add(InlineKeyboardButton("🧹 Очистить корзину", callback_data="clear"))
     kb.add(InlineKeyboardButton("✅ Оформить заказ",   callback_data="checkout"))
@@ -381,7 +826,7 @@ async def clear_cart(call: types.CallbackQuery):
     await call.message.edit_text("🛒 Корзина очищена", reply_markup=kb)
 
 
-# --- ОФОРМЛЕНИЕ: шаг 1 — выбор доставки ---
+# ── Оформление заказа ────────────────────────────────────────
 
 @dp.callback_query_handler(lambda c: c.data == "checkout")
 async def checkout(call: types.CallbackQuery):
@@ -395,9 +840,6 @@ async def checkout(call: types.CallbackQuery):
     kb.add(InlineKeyboardButton("⬅️ Назад",     callback_data="open_cart"))
     await call.message.edit_text("Выбери способ получения:", reply_markup=kb)
 
-
-# --- САМОВЫВОЗ: показываем пункт выдачи ---
-
 @dp.callback_query_handler(lambda c: c.data == "delivery_pickup")
 async def pickup_point(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(delivery="pickup", address=PICKUP_ADDRESS)
@@ -406,8 +848,7 @@ async def pickup_point(call: types.CallbackQuery, state: FSMContext):
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="checkout"))
     await call.message.edit_text(
         f"📍 *Пункт самовывоза:*\n\n`{PICKUP_ADDRESS}`\n\nНажми для подтверждения:",
-        parse_mode="Markdown",
-        reply_markup=kb
+        parse_mode="Markdown", reply_markup=kb
     )
 
 @dp.callback_query_handler(lambda c: c.data == "confirm_pickup")
@@ -415,17 +856,11 @@ async def confirm_pickup(call: types.CallbackQuery, state: FSMContext):
     await OrderState.waiting_contact.set()
     await call.message.edit_text("📱 Напиши свой @username или номер телефона:")
 
-
-# --- ДОСТАВКА: запрашиваем контакт ---
-
 @dp.callback_query_handler(lambda c: c.data == "delivery_courier")
 async def delivery_courier(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(delivery="courier")
     await OrderState.waiting_contact.set()
     await call.message.edit_text("📱 Напиши свой @username или номер телефона:")
-
-
-# --- ШАГ 2: контакт ---
 
 @dp.message_handler(state=OrderState.waiting_contact)
 async def get_contact(msg: types.Message, state: FSMContext):
@@ -438,15 +873,11 @@ async def get_contact(msg: types.Message, state: FSMContext):
         await OrderState.waiting_payment.set()
         await show_payment_options(msg, state)
 
-
-# --- ШАГ 3: адрес (только для доставки) ---
-
 @dp.message_handler(state=OrderState.waiting_address)
 async def get_address(msg: types.Message, state: FSMContext):
     await state.update_data(address=msg.text)
     await OrderState.waiting_payment.set()
     await show_payment_options(msg, state)
-
 
 async def show_payment_options(msg: types.Message, state: FSMContext):
     uid = msg.from_user.id
@@ -459,7 +890,7 @@ async def show_payment_options(msg: types.Message, state: FSMContext):
         for pid, qty in cart.get(uid, {}).items()
         for item in data_gs if item["ID"] == pid
     )
-    disc_sum   = int(raw_total * discount / 100)
+    disc_sum    = int(raw_total * discount / 100)
     final_total = raw_total - disc_sum
 
     text = f"💰 Сумма заказа: {raw_total:,}₽"
@@ -471,13 +902,10 @@ async def show_payment_options(msg: types.Message, state: FSMContext):
     kb.add(InlineKeyboardButton("💵 Наличные",         callback_data="pay_cash"))
     await msg.answer(text, reply_markup=kb)
 
-
-# --- ШАГ 4: оплата и финализация ---
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pay_"), state=OrderState.waiting_payment)
 async def finish(call: types.CallbackQuery, state: FSMContext):
-    uid   = call.from_user.id
-    pay   = call.data.split("_", 1)[1]
+    uid = call.from_user.id
+    pay = call.data.split("_", 1)[1]
 
     order_data = await state.get_data()
     delivery   = order_data.get("delivery", "pickup")
@@ -489,11 +917,10 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         await call.answer("Корзина пустая", show_alert=True)
         return
 
-    data_gs = products_ws.get_all_records()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    raw_total = 0
+    data_gs     = products_ws.get_all_records()
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    raw_total   = 0
     order_lines = []
-
     user_total  = get_user_total(uid)
     level_name, discount = get_loyalty(user_total)
 
@@ -510,7 +937,7 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
                     item["Название"], qty, price, summ,
                     "Доставка" if delivery == "courier" else "Самовывоз",
                     address, "Перевод" if pay == "card" else "Наличные",
-                    discount, ""  # итого со скидкой заполним ниже
+                    discount, ""
                 ])
 
     disc_sum    = int(raw_total * discount / 100)
@@ -522,6 +949,10 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
     pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
     delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
     summary        = "\n".join(order_lines)
+    order_id       = f"{uid}_{int(time.time())}"
+
+    # Сохраняем заказ
+    save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay, summary)
 
     user_text = f"✅ Заказ оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
     if discount > 0:
@@ -530,15 +961,15 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         f"\n\n🚚 Получение: {delivery_label}\n"
         f"📍 Адрес: {address}\n"
         f"💳 Оплата: {pay_label}\n\n"
-        f"Мы свяжемся с тобой в ближайшее время 🙌"
+        f"Ожидай подтверждения от продавца 🙌"
     )
     if new_level and new_level != level_name:
-        user_text += f"\n\n🎉 Новый уровень: {new_level}!"
+        user_text += f"\n\n🎉 Новый уровень лояльности: {new_level}!"
 
     await call.message.edit_text(user_text)
 
     seller_text = (
-        f"🔥 Новый заказ!\n\n"
+        f"🔥 Новый заказ! #{order_id}\n\n"
         f"👤 {contact} (ID: {uid})\n\n"
         f"📦 Состав:\n{summary}\n\n"
         f"💰 Сумма: {raw_total:,}₽"
@@ -550,32 +981,33 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         f"📍 Адрес: {address}\n"
         f"💳 Оплата: {pay_label}"
     )
+
     for seller_id in SELLER_IDS:
         try:
-            await bot.send_message(seller_id, seller_text)
+            await bot.send_message(seller_id, seller_text, reply_markup=seller_kb(order_id))
         except Exception as e:
             logging.error(f"Ошибка отправки продавцу {seller_id}: {e}")
 
 
-# --- MINI APP: заказ из веб-приложения ---
+# ── Mini App: заказ из веб-приложения ───────────────────────
 
 @dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
 async def web_app_order(msg: types.Message):
     try:
-        data       = json.loads(msg.web_app_data.data)
-        uid        = msg.from_user.id
-        contact    = data.get("contact", "—")
-        address    = data.get("address", PICKUP_ADDRESS)
-        delivery   = data.get("delivery", "pickup")
-        pay        = data.get("pay", "card")
-        items      = data.get("items", [])
+        data     = json.loads(msg.web_app_data.data)
+        uid      = msg.from_user.id
+        contact  = data.get("contact", "—")
+        address  = data.get("address", PICKUP_ADDRESS)
+        delivery = data.get("delivery", "pickup")
+        pay      = data.get("pay", "card")
+        items    = data.get("items", [])
 
         user_total  = get_user_total(uid)
         level_name, discount = get_loyalty(user_total)
 
-        now       = datetime.now().strftime("%Y-%m-%d %H:%M")
-        raw_total = sum(i["price"] * i["qty"] for i in items)
-        disc_sum  = int(raw_total * discount / 100)
+        now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+        raw_total   = sum(i["price"] * i["qty"] for i in items)
+        disc_sum    = int(raw_total * discount / 100)
         final_total = raw_total - disc_sum
 
         data_gs     = products_ws.get_all_records()
@@ -595,12 +1027,14 @@ async def web_app_order(msg: types.Message):
                 discount, final_total
             ])
 
-        new_total = update_user_total(uid, contact, final_total)
+        new_total  = update_user_total(uid, contact, final_total)
         new_level, _ = get_loyalty(new_total)
-
         summary        = "\n".join(order_lines)
         pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
         delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
+        order_id       = f"{uid}_{int(time.time())}"
+
+        save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay, summary)
 
         user_text = f"✅ Заказ из Mini App оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
         if discount > 0:
@@ -609,14 +1043,14 @@ async def web_app_order(msg: types.Message):
             f"\n\n🚚 Получение: {delivery_label}\n"
             f"📍 Адрес: {address}\n"
             f"💳 Оплата: {pay_label}\n\n"
-            f"Мы свяжемся с тобой в ближайшее время 🙌"
+            f"Ожидай подтверждения от продавца 🙌"
         )
         if new_level and new_level != level_name:
-            user_text += f"\n\n🎉 Новый уровень: {new_level}!"
+            user_text += f"\n\n🎉 Новый уровень лояльности: {new_level}!"
         await msg.answer(user_text)
 
         seller_text = (
-            f"🔥 Новый заказ (Mini App)!\n\n"
+            f"🔥 Новый заказ (Mini App)! #{order_id}\n\n"
             f"👤 {contact} (ID: {uid})\n\n"
             f"📦 Состав:\n{summary}\n\n"
             f"💰 Сумма: {raw_total:,}₽"
@@ -624,9 +1058,10 @@ async def web_app_order(msg: types.Message):
         if discount > 0:
             seller_text += f"\n🎁 Скидка {level_name}: -{disc_sum:,}₽\n✅ Итого: {final_total:,}₽"
         seller_text += f"\n\n🚚 Тип: {delivery_label}\n📍 Адрес: {address}\n💳 Оплата: {pay_label}"
+
         for seller_id in SELLER_IDS:
             try:
-                await bot.send_message(seller_id, seller_text)
+                await bot.send_message(seller_id, seller_text, reply_markup=seller_kb(order_id))
             except Exception as e:
                 logging.error(f"Ошибка отправки продавцу {seller_id}: {e}")
 
@@ -635,7 +1070,10 @@ async def web_app_order(msg: types.Message):
         await msg.answer("Ошибка при оформлении. Попробуй через бота.")
 
 
+# ── Запуск ──────────────────────────────────────────────────
+
 async def on_startup(dp):
+    init_sheets()
     await bot.set_my_commands([
         types.BotCommand("start",   "Главное меню"),
         types.BotCommand("app",     "Открыть Mini App"),

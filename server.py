@@ -3,7 +3,7 @@ Flask-сервер для Telegram Mini App.
 Локально: python server.py
 Продакшен: gunicorn server:app (Render.com)
 """
-from flask import Flask, jsonify, send_from_directory, request
+from flask import Flask, jsonify, send_from_directory, request, Response
 from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -11,6 +11,7 @@ import logging
 import os
 import json
 import tempfile
+import requests as http_requests
 
 logging.basicConfig(level=logging.INFO)
 
@@ -211,6 +212,23 @@ def register_promo():
     except Exception as e:
         logging.error(f"register_promo: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/photo/<file_id>")
+def proxy_photo(file_id: str):
+    """Прокси для картинок Google Drive через сервисный аккаунт."""
+    try:
+        token = creds.get_access_token().access_token
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        resp = http_requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10, stream=True)
+        if resp.status_code != 200:
+            return jsonify({"error": "not found"}), 404
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        return Response(resp.content, content_type=content_type,
+                        headers={"Cache-Control": "public, max-age=86400"})
+    except Exception as e:
+        logging.error(f"proxy_photo: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

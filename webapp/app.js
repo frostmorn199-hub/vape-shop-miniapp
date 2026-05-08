@@ -250,12 +250,10 @@ function shareRefCode() {
 
 function normalizePhotoUrl(url) {
   if (!url) return "";
-  // Google Drive: /file/d/FILE_ID/view
   const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return `${BASE}/api/photo/${m[1]}`;
-  // Google Drive: ?id=FILE_ID
+  if (m) return `https://drive.google.com/uc?export=view&id=${m[1]}`;
   const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2 && url.includes("drive.google.com")) return `${BASE}/api/photo/${m2[1]}`;
+  if (m2 && url.includes("drive.google.com")) return `https://drive.google.com/uc?export=view&id=${m2[1]}`;
   return url;
 }
 

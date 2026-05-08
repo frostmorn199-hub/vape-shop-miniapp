@@ -25,12 +25,12 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
 
 // ─── Призы ──────────────────────────────────────────────
 const PRIZES = [
-  { id: 'disc10', label: 'Скидка\n10%',         emoji: '🎫', color: '#c0392b', isPromo: true,  prefix: 'VAPE10' },
-  { id: 'liquid', label: 'Любая\nжидкость',     emoji: '💧', color: '#2471a3', isPromo: false },
-  { id: 'disc5',  label: 'Скидка\n5%',          emoji: '🎫', color: '#d35400', isPromo: true,  prefix: 'VAPE5'  },
-  { id: 'disp',   label: 'Одноразка\n2500 тяг', emoji: '🔥', color: '#7d3c98', isPromo: false },
-  { id: 'points', label: '+500\nбаллов',        emoji: '⭐', color: '#1e8449', isPromo: false },
-  { id: 'coal',   label: 'Уголь для\nкальяна',  emoji: '🪨', color: '#566573', isPromo: false },
+  { id: 'disc10', label: 'Скидка\n10%',         emoji: '🏷️', color: '#c0392b', isPromo: true,  prefix: 'VAPE10' },
+  { id: 'liquid', label: 'Любая\nжидкость',     emoji: '💧', color: '#1a5276', isPromo: false },
+  { id: 'disc5',  label: 'Скидка\n5%',          emoji: '💸', color: '#d35400', isPromo: true,  prefix: 'VAPE5'  },
+  { id: 'disp',   label: 'Одноразка\n2500 тяг', emoji: '🔥', color: '#6c3483', isPromo: false },
+  { id: 'points', label: '+500\nбаллов',        emoji: '💰', color: '#1e6b35', isPromo: false },
+  { id: 'coal',   label: 'Уголь для\nкальяна',  emoji: '🪨', color: '#424949', isPromo: false },
 ];
 const PRIZE_TEXTS = {
   disc10: 'Скидка 10% на следующий заказ!',
@@ -41,16 +41,34 @@ const PRIZE_TEXTS = {
   coal:   'Уголь для кальяна — бесплатно!',
 };
 
+// ─── API ────────────────────────────────────────────────
+const BASE_URL = window.location.origin;
+const TG_UID   = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || "";
+
+async function registerPromoCode(code, type, discount) {
+  try {
+    await fetch(`${BASE_URL}/api/register-promo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, type, discount, uid: TG_UID }),
+    });
+  } catch (e) {
+    console.warn("registerPromoCode failed", e);
+  }
+}
+
 // ─── Сторадж ────────────────────────────────────────────
-const genCode   = p  => p + '-' + Math.random().toString(36).slice(2,8).toUpperCase();
-const todayKey  = () => new Date().toISOString().slice(0,10);
-const hasSpun   = () => localStorage.getItem('vr_spin_date') === todayKey();
-const markSpun  = (id, code) => {
+const genCode      = p  => p + '-' + Math.random().toString(36).slice(2,8).toUpperCase();
+const todayKey     = () => new Date().toISOString().slice(0,10);
+const hasSpun      = () => localStorage.getItem('vr_spin_date') === todayKey();
+const markSpun     = (id, code) => {
   localStorage.setItem('vr_spin_date', todayKey());
   localStorage.setItem('vr_last_prize', JSON.stringify({ id, code }));
 };
-const getBest   = () => parseInt(localStorage.getItem('vr_best') || '0');
-const saveBest  = s  => { if (s > getBest()) localStorage.setItem('vr_best', s); };
+const getBest      = () => parseInt(localStorage.getItem('vr_best') || '0');
+const saveBest     = s  => { if (s > getBest()) localStorage.setItem('vr_best', s); };
+const getTotalCoins = () => parseInt(localStorage.getItem('vr_coins') || '0');
+const saveTotalCoins = n => localStorage.setItem('vr_coins', getTotalCoins() + n);
 
 // ─── Навигация ───────────────────────────────────────────
 function showScreen(id) {
@@ -93,9 +111,10 @@ function initStart() {
 let wheelAngle = 0, spinning = false;
 
 function initWheel() {
-  const size = Math.min(window.innerWidth * 0.82, 310);
+  const pad  = 34;                             // отступ под рамку
+  const size = Math.min(window.innerWidth * 0.80, 300);
   const wc   = document.getElementById('wheelCanvas');
-  wc.width = wc.height = size;
+  wc.width = wc.height = size + pad * 2;       // canvas больше колеса
   drawWheel(wheelAngle);
   const btn = document.getElementById('btn-spin');
   if (hasSpun()) { btn.disabled = true; btn.textContent = 'Уже крутили'; }
@@ -103,39 +122,101 @@ function initWheel() {
 }
 
 function drawWheel(angle) {
-  const wc  = document.getElementById('wheelCanvas');
-  const ctx = wc.getContext('2d');
-  const cx  = wc.width / 2, cy = wc.height / 2, r = cx - 6;
-  const arc = (Math.PI * 2) / PRIZES.length;
-  ctx.clearRect(0,0,wc.width,wc.height);
+  const wc   = document.getElementById('wheelCanvas');
+  const wctx = wc.getContext('2d');
+  const cx   = wc.width / 2, cy = wc.height / 2;
+  const pad  = 34;
+  const r    = cx - pad - 2;                  // радиус колеса
+  const arc  = (Math.PI * 2) / PRIZES.length;
+  wctx.clearRect(0, 0, wc.width, wc.height);
 
+  // ── Сегменты ──────────────────────────────────────────
   PRIZES.forEach((p, i) => {
     const s = angle + arc * i - Math.PI / 2, e = s + arc;
-    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,s,e); ctx.closePath();
-    ctx.fillStyle   = p.color; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1.5; ctx.stroke();
+    wctx.beginPath(); wctx.moveTo(cx, cy); wctx.arc(cx, cy, r, s, e); wctx.closePath();
+    wctx.fillStyle   = p.color; wctx.fill();
+    wctx.strokeStyle = 'rgba(0,0,0,0.25)'; wctx.lineWidth = 1.5; wctx.stroke();
 
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(s + arc / 2);
-    ctx.textAlign   = 'right';
-    ctx.fillStyle   = 'rgba(255,255,255,0.95)';
-    ctx.font        = `bold ${Math.round(wc.width * 0.036)}px sans-serif`;
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 4;
+    // Текст сегмента
+    wctx.save();
+    wctx.translate(cx, cy);
+    wctx.rotate(s + arc / 2);
+    wctx.textAlign   = 'right';
+    wctx.fillStyle   = 'rgba(255,255,255,0.96)';
+    wctx.font        = `bold ${Math.round(wc.width * 0.034)}px sans-serif`;
+    wctx.shadowColor = 'rgba(0,0,0,0.8)'; wctx.shadowBlur = 5;
     p.label.split('\n').forEach((line, li, arr) => {
-      ctx.fillText(line, r - 10, (li - (arr.length-1)/2) * wc.width * 0.042);
+      wctx.fillText(line, r - 12, (li - (arr.length - 1) / 2) * wc.width * 0.040);
     });
-    ctx.restore();
+    // Эмодзи у центра
+    wctx.font = `${Math.round(wc.width * 0.052)}px serif`;
+    wctx.shadowBlur = 0;
+    wctx.textAlign = 'left';
+    wctx.fillText(p.emoji, 14, wc.width * 0.018);
+    wctx.restore();
   });
 
-  // Кольцо + центр
-  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
-  ctx.strokeStyle = 'rgba(255,190,0,0.5)'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.beginPath(); ctx.arc(cx,cy,22,0,Math.PI*2);
-  ctx.fillStyle   = '#07071a'; ctx.fill();
-  ctx.strokeStyle = 'rgba(255,190,0,0.6)'; ctx.lineWidth = 2; ctx.stroke();
-  ctx.font = '15px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.shadowBlur = 0; ctx.fillStyle = '#fff'; ctx.fillText('💨', cx, cy);
+  // ── Внутреннее кольцо (тонкий разделитель) ───────────
+  wctx.beginPath(); wctx.arc(cx, cy, r, 0, Math.PI * 2);
+  wctx.strokeStyle = 'rgba(255,255,255,0.15)'; wctx.lineWidth = 2; wctx.stroke();
+
+  // ── Определяем текущий сегмент под указателем ─────────
+  const normalizedAngle = ((-angle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+  const currentSeg      = Math.floor(normalizedAngle / arc) % PRIZES.length;
+  const segStart        = angle + arc * currentSeg - Math.PI / 2;
+  const segEnd          = segStart + arc;
+
+  // ── Внешняя декоративная рамка ────────────────────────
+  const fR = r + 10;    // радиус основной рамки
+  const fR2 = r + 22;   // радиус внешней окантовки
+
+  // Золотая рамка (градиент)
+  const fGrad = wctx.createConicalGradient
+    ? wctx.createConicalGradient(cx, cy, 0)   // если поддерживается
+    : null;
+
+  // Универсальный вариант — линейный градиент поверх кольца
+  wctx.beginPath(); wctx.arc(cx, cy, fR, 0, Math.PI * 2);
+  wctx.strokeStyle = 'rgba(255,190,0,0.55)'; wctx.lineWidth = 5; wctx.stroke();
+
+  wctx.beginPath(); wctx.arc(cx, cy, fR2, 0, Math.PI * 2);
+  wctx.strokeStyle = 'rgba(200,140,0,0.30)'; wctx.lineWidth = 3; wctx.stroke();
+
+  // Засечки у каждой границы сегментов (как делённая шкала)
+  for (let i = 0; i < PRIZES.length; i++) {
+    const tickA = angle + arc * i - Math.PI / 2;
+    const x1 = cx + Math.cos(tickA) * (r - 1);
+    const y1 = cy + Math.sin(tickA) * (r - 1);
+    const x2 = cx + Math.cos(tickA) * (fR2 + 6);
+    const y2 = cy + Math.sin(tickA) * (fR2 + 6);
+    wctx.strokeStyle = 'rgba(255,220,80,0.7)'; wctx.lineWidth = 2;
+    wctx.beginPath(); wctx.moveTo(x1, y1); wctx.lineTo(x2, y2); wctx.stroke();
+    // Маленький ромб на конце засечки
+    wctx.fillStyle = '#ffcf40';
+    wctx.beginPath(); wctx.arc(x2, y2, 3.5, 0, Math.PI * 2); wctx.fill();
+  }
+
+  // ── Подсветка активного сегмента на рамке ─────────────
+  wctx.save();
+  wctx.shadowColor = 'rgba(255,240,80,1)';
+  wctx.shadowBlur  = 18;
+  wctx.beginPath();
+  wctx.arc(cx, cy, fR, segStart, segEnd);
+  wctx.strokeStyle = 'rgba(255,240,100,0.95)';
+  wctx.lineWidth   = 7;
+  wctx.stroke();
+  wctx.restore();
+
+  // ── Центральная шляпка ────────────────────────────────
+  wctx.beginPath(); wctx.arc(cx, cy, 24, 0, Math.PI * 2);
+  const hubGrad = wctx.createRadialGradient(cx - 5, cy - 5, 2, cx, cy, 24);
+  hubGrad.addColorStop(0,   '#ffcf40');
+  hubGrad.addColorStop(0.5, '#e65c00');
+  hubGrad.addColorStop(1,   '#7a2d00');
+  wctx.fillStyle = hubGrad; wctx.fill();
+  wctx.strokeStyle = 'rgba(255,200,50,0.7)'; wctx.lineWidth = 2; wctx.stroke();
+  wctx.font = '16px serif'; wctx.textAlign = 'center'; wctx.textBaseline = 'middle';
+  wctx.shadowBlur = 0; wctx.fillStyle = '#fff'; wctx.fillText('💨', cx, cy);
 }
 
 function spinWheel() {
@@ -160,6 +241,11 @@ function spinWheel() {
       const prize = PRIZES[winIdx];
       const code  = prize.isPromo ? genCode(prize.prefix) : null;
       markSpun(prize.id, code);
+      // Регистрируем промокод на сервере чтобы бот мог его принять
+      if (code && prize.isPromo) {
+        const discountPct = prize.id === 'disc10' ? 10 : 5;
+        registerPromoCode(code, prize.id, discountPct);
+      }
       showPrize(prize, code);
     }
   }
@@ -229,7 +315,8 @@ function scaleAtY(y) {
 // ─── Состояние игры ─────────────────────────────────────
 let canvas, ctx;
 let score, speed, playerLane, targetLane, playerX;
-let obstacles, particles, roadOffset, frameCount;
+let obstacles, rings, particles, roadOffset, frameCount;
+let coins;           // монеты текущего забега
 let animFrame, gameActive;
 
 function startGame() {
@@ -240,13 +327,15 @@ function startGame() {
 
   // processedChar загружается заранее — ничего делать не нужно
 
-  score      = 0; speed = 3.0;   // старт медленнее
+  score      = 0; speed = 3.0;
   playerLane = 1; targetLane = 1;
   playerX    = LANE_BOT[1];
-  obstacles  = []; particles = [];
+  obstacles  = []; rings = []; particles = [];
+  coins      = 0;
   roadOffset = 0; frameCount = 0;
   gameActive = true;
-  document.getElementById('hud-score').textContent = '0';
+  document.getElementById('hud-score').textContent  = '0';
+  document.getElementById('hud-coins').textContent  = '🌀 0';
 
   // Свайп-управление
   let tx0 = 0, ty0 = 0;
@@ -290,10 +379,24 @@ function loop() {
   const rate = Math.max(50, 160 - Math.floor(speed * 9));
   if (frameCount % rate === 0) {
     const lane = Math.floor(Math.random() * LANES);
-    // Никогда не спавним 2 препятствия подряд на той же полосе близко
     const recent = obstacles.filter(o => o.lane === lane && o.y < VPY + H * 0.3);
     if (recent.length === 0) {
       obstacles.push({ lane, y: VPY + 10 });
+    }
+  }
+
+  // Спавн колечек дыма — каждые ~90 кадров, не совпадают с препятствиями
+  const ringRate = Math.max(55, 110 - Math.floor(speed * 4));
+  if (frameCount % ringRate === 0) {
+    const lane = Math.floor(Math.random() * LANES);
+    // Не спавним кольцо туда, где сейчас идёт препятствие
+    const blocked = obstacles.some(o => o.lane === lane && o.y < VPY + H * 0.5 && o.y > VPY + 5);
+    if (!blocked) {
+      // Иногда — пачка из 3 колец в ряд
+      const count = Math.random() < 0.35 ? 3 : 1;
+      for (let k = 0; k < count; k++) {
+        rings.push({ lane, y: VPY + 10 + k * 40 });
+      }
     }
   }
 
@@ -303,6 +406,29 @@ function loop() {
     o.y += speed * (0.8 + s * 2.2);
   });
   obstacles = obstacles.filter(o => o.y < H + 120);
+
+  // Движение колечек (та же физика)
+  rings.forEach(r => {
+    const s = scaleAtY(r.y);
+    r.y += speed * (0.8 + s * 2.2);
+  });
+  rings = rings.filter(r => r.y < H + 60);
+
+  // Сбор колечек
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    if (r.lane !== targetLane) continue;
+    if (r.y > GROUND_Y - 70 && r.y < GROUND_Y + 30) {
+      const rx = laneXatY(r.lane, r.y);
+      if (Math.abs(rx - playerX) < W * 0.14) {
+        rings.splice(i, 1);
+        coins++;
+        document.getElementById('hud-coins').textContent = '🌀 ' + coins;
+        tg.HapticFeedback?.impactOccurred('light');
+        sparkleRing(rx, r.y - 40 * scaleAtY(r.y));
+      }
+    }
+  }
 
   // Частицы
   particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.18; p.life--; });
@@ -334,7 +460,8 @@ function render() {
   ctx.clearRect(0, 0, W, H);
   drawSky();
   drawRoad();
-  // Сортируем препятствия по Y (сначала дальние)
+  // Сортируем по Y (дальние сначала): и препятствия, и кольца
+  [...rings].sort((a,b) => a.y - b.y).forEach(drawRing);
   [...obstacles].sort((a,b) => a.y - b.y).forEach(drawBattery);
   drawParticles();
   if (gameActive) drawPlayer();
@@ -474,73 +601,246 @@ function drawRoad() {
   ctx.fillRect(0, VPY, W, H - VPY);
 }
 
-// ── Персонаж — canvas + screen blend ────────────────────
-// Изображение грузится браузером автоматически из тега <img id="char-img">
-// Спрайт-лист 3 колонки × 2 ряда:
-//   Ряд 0 (верх): FRONT | 3/4 | SIDE
-//   Ряд 1 (низ):  BACK  | RUN | JUMP
-
-function getCharImg() {
-  // Используем <img> из HTML — браузер гарантированно его загружает
-  return document.getElementById('char-img');
-}
-
+// ── Персонаж ─────────────────────────────────────────────
 function drawPlayer() {
   const x    = playerX;
   const y    = GROUND_Y;
-  const pw   = Math.min(W * 0.24, 118);
-  const ph   = pw * 1.7;
-  // Двойной синус — органичное покачивание
-  const bob  = Math.sin(frameCount * 0.16) * 4 + Math.sin(frameCount * 0.29) * 1.5;
-  // Наклон при смене полосы
-  const tilt = (LANE_BOT[targetLane] - playerX) / (W * 0.35) * 0.12;
+  const pw   = Math.min(W * 0.22, 100);
+  const ph   = pw * 2.0;
+  const bob  = Math.sin(frameCount * 0.16) * 4 + Math.sin(frameCount * 0.3) * 1.5;
+  const tilt = (LANE_BOT[targetLane] - playerX) / (W * 0.35) * 0.10;
 
   // Тень под ногами
-  const sg = ctx.createRadialGradient(x, y + 8, 1, x, y + 8, pw * 0.6);
-  sg.addColorStop(0, 'rgba(0,0,0,0.7)');
-  sg.addColorStop(1, 'transparent');
+  const sg = ctx.createRadialGradient(x, y + 8, 1, x, y + 8, pw * 0.55);
+  sg.addColorStop(0, 'rgba(0,0,0,0.65)'); sg.addColorStop(1, 'transparent');
   ctx.fillStyle = sg;
   ctx.beginPath();
-  ctx.ellipse(x, y + 10, pw * 0.55, pw * 0.13, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 10, pw * 0.50, pw * 0.12, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const charEl = getCharImg();
+  drawVapeCharacter(x, y, pw, ph, bob, tilt);
+}
 
-  if (charEl && charEl.complete && charEl.naturalWidth > 0) {
-    // Спрайт загружен — рисуем на canvas через screen blend
-    const COLS = 3, ROWS = 2;
-    const sw   = charEl.naturalWidth  / COLS;
-    const sh   = charEl.naturalHeight / ROWS;
-    // Чередуем RUN (col=1) и JUMP (col=2) каждые 8 кадров
-    const frame = Math.floor(frameCount / 8) % 2;
-    const srcX  = sw * (1 + frame);
-    const srcY  = sh * 1;           // нижний ряд
+/**
+ * Рисует вайп-маскота canvas-примитивами.
+ * Намеренно не использует roundRect с массивом радиусов
+ * (для совместимости с полифиллом).
+ */
+function drawVapeCharacter(cx, cy, pw, ph, bob, tilt) {
+  const run  = Math.sin(frameCount * 0.32);   // -1…+1, фаза бега
+  const run2 = Math.sin(frameCount * 0.32 + Math.PI); // противофаза
 
+  ctx.save();
+  // Начало координат — центр низа персонажа
+  ctx.translate(cx, cy + bob);
+  ctx.rotate(tilt);
+
+  // ─── Размеры ────────────────────────────────────────────
+  const legH   = ph * 0.30;                 // длина ноги
+  const bodyH  = ph * 0.44;                 // высота тела
+  const headR  = pw * 0.26;                 // радиус головы
+  const bodyW  = pw * 0.68;                 // ширина тела
+  const bodyX  = -bodyW / 2;
+  const bodyY  = -(legH + bodyH);           // верх тела (относит. cy)
+  const headY  = bodyY - headR * 1.05;      // центр головы
+  const bodyBR = bodyW * 0.14;              // скругление тела
+
+  // ─── Ноги ──────────────────────────────────────────────
+  const legOffX = bodyW * 0.20;
+  const legW    = pw * 0.09;
+  const shoeRx  = pw * 0.13, shoeRy = pw * 0.065;
+
+  [[-legOffX, '#f06292', run * 0.40],
+   [ legOffX, '#26c6da', run2 * 0.40]].forEach(([lx, col, angle]) => {
     ctx.save();
-    ctx.translate(x, y - ph + bob);
-    ctx.rotate(tilt);
-    // screen: тёмный фон спрайта (~#0f0f1a) + тёмный фон игры → почти невидим
-    ctx.globalCompositeOperation = 'screen';
-    ctx.drawImage(charEl, srcX, srcY, sw, sh * 0.82, -pw / 2, 0, pw, ph * 0.82);
+    ctx.translate(lx, -legH);
+    ctx.rotate(angle);
+    // Нога
+    ctx.strokeStyle = col; ctx.lineWidth = legW; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, legH * 0.92); ctx.stroke();
+    // Кроссовок
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(shoeRx * 0.45, legH * 0.92, shoeRx, shoeRy, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.13)'; ctx.lineWidth = 1.2; ctx.stroke();
     ctx.restore();
-  } else {
-    // Fallback — яркий заменитель пока изображение не загружено
+  });
+
+  // ─── Тело ──────────────────────────────────────────────
+  // Градиент слева (розовый) → справа (голубой)
+  const bodyGrad = ctx.createLinearGradient(bodyX, 0, bodyX + bodyW, 0);
+  bodyGrad.addColorStop(0,    '#f06292');
+  bodyGrad.addColorStop(0.48, '#e91e8c');
+  bodyGrad.addColorStop(0.52, '#26c6da');
+  bodyGrad.addColorStop(1,    '#00acc1');
+
+  ctx.shadowColor = 'rgba(240,98,146,0.55)';
+  ctx.shadowBlur  = 14;
+  ctx.beginPath();
+  ctx.roundRect(bodyX, bodyY, bodyW, bodyH, bodyBR);
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Обводка
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.roundRect(bodyX, bodyY, bodyW, bodyH, bodyBR); ctx.stroke();
+
+  // Вертикальная линия раздела цветов
+  ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, bodyY + 5); ctx.lineTo(0, bodyY + bodyH - 5); ctx.stroke();
+
+  // Блик (верхняя полоса)
+  ctx.fillStyle = 'rgba(255,255,255,0.13)';
+  ctx.beginPath();
+  ctx.roundRect(bodyX + 3, bodyY + 4, bodyW - 6, bodyH * 0.26, bodyBR * 0.5);
+  ctx.fill();
+
+  // Небольшие кнопки/детали
+  [-bodyW * 0.28, bodyW * 0.28].forEach((bx2, i) => {
+    ctx.fillStyle = i === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(0,200,220,0.35)';
+    ctx.beginPath();
+    ctx.arc(bx2, bodyY + bodyH * 0.72, pw * 0.055, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // ─── Руки ──────────────────────────────────────────────
+  const armY   = bodyY + bodyH * 0.30;
+  const armLen = pw * 0.30;
+  const armW2  = pw * 0.085;
+  const glvR   = pw * 0.095;
+
+  [[-bodyW / 2, '#f06292', run2 * 0.44,  -1],   // левая рука — противофаза левой ноги
+   [ bodyW / 2, '#26c6da', run * 0.44,    1]].forEach(([ax, col, angle, dir]) => {
     ctx.save();
-    ctx.translate(x, y - ph * 0.5 + bob);
-    ctx.rotate(tilt);
-    const grad = ctx.createLinearGradient(-pw/2, 0, pw/2, ph * 0.5);
-    grad.addColorStop(0, '#ff6b9d');
-    grad.addColorStop(1, '#4ecdc4');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.roundRect(-pw / 2, 0, pw, ph * 0.5, pw * 0.12);
-    ctx.fill();
-    // Лицо
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.beginPath();
-    ctx.arc(0, ph * 0.12, pw * 0.15, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.translate(ax, armY);
+    ctx.rotate(angle);
+    ctx.strokeStyle = col; ctx.lineWidth = armW2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(dir * armLen * 0.72, armLen * 0.58); ctx.stroke();
+    // Перчатка
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(dir * armLen * 0.72, armLen * 0.58, glvR, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1; ctx.stroke();
     ctx.restore();
+  });
+
+  // ─── Голова ─────────────────────────────────────────────
+  // Голова — сфера с розово-голубым градиентом
+  const headGrad = ctx.createRadialGradient(-headR * 0.25, headY - headR * 0.25, headR * 0.1,
+                                              0, headY, headR);
+  headGrad.addColorStop(0, '#ff9fc8');
+  headGrad.addColorStop(0.55, '#f06292');
+  headGrad.addColorStop(1, '#c2185b');
+
+  ctx.shadowColor = 'rgba(240,98,146,0.4)'; ctx.shadowBlur = 10;
+  ctx.beginPath(); ctx.arc(0, headY, headR, 0, Math.PI * 2);
+  ctx.fillStyle = headGrad; ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Антенна / мундштук
+  ctx.strokeStyle = '#f48fb1'; ctx.lineWidth = pw * 0.055; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, headY - headR); ctx.lineTo(0, headY - headR * 1.55); ctx.stroke();
+  // Пар из антенны
+  for (let p = 0; p < 3; p++) {
+    const vx  = Math.sin(frameCount * 0.07 + p * 2.0) * 7;
+    const vy  = headY - headR * 1.6 - p * 11;
+    const vr  = 3.5 + p * 3;
+    const va  = (0.28 - p * 0.08) * (0.5 + Math.sin(frameCount * 0.09 + p) * 0.35);
+    ctx.beginPath(); ctx.arc(vx, vy, vr, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(190,220,255,${va.toFixed(2)})`; ctx.fill();
+  }
+
+  // ─── Лицо ──────────────────────────────────────────────
+  const ew = headR * 0.32;
+  const ey = headY;
+
+  // Белки глаз
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.ellipse(-headR * 0.40, ey, ew, ew * 0.82, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse( headR * 0.40, ey, ew, ew * 0.82, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Зрачки
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath(); ctx.arc(-headR * 0.37 + 2, ey + 1, ew * 0.50, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc( headR * 0.37 + 2, ey + 1, ew * 0.50, 0, Math.PI * 2); ctx.fill();
+
+  // Блики на зрачках
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.arc(-headR * 0.35 + 3, ey - 1.5, ew * 0.17, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc( headR * 0.35 + 3, ey - 1.5, ew * 0.17, 0, Math.PI * 2); ctx.fill();
+
+  // Улыбка
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.7; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(0, ey + ew * 1.25, headR * 0.28, 0.25, Math.PI - 0.25);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── Колечко дыма (собираемый объект) ────────────────────
+function drawRing(ring) {
+  const sc  = scaleAtY(ring.y);
+  const rx  = laneXatY(ring.lane, ring.y);
+  const floatH = 58 * sc;              // высота парения над дорогой
+  const ry  = ring.y - floatH;
+
+  const outerA = W * 0.038 * sc;      // полуось X внешнего кольца
+  const outerB = outerA * 0.48;       // полуось Y (перспектива)
+  const pulse  = 0.88 + Math.sin(frameCount * 0.11 + ring.y * 0.04) * 0.12;
+
+  ctx.save();
+  ctx.translate(rx, ry);
+  ctx.scale(pulse, pulse);
+
+  // Свечение
+  ctx.shadowColor = 'rgba(140,230,255,0.9)';
+  ctx.shadowBlur  = 12 * sc;
+
+  // Внешнее кольцо
+  ctx.beginPath();
+  ctx.ellipse(0, 0, outerA, outerB, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200,248,255,0.95)';
+  ctx.lineWidth   = outerA * 0.22;
+  ctx.stroke();
+
+  // Внутренний блик
+  ctx.beginPath();
+  ctx.ellipse(0, 0, outerA * 0.55, outerB * 0.55, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.38)';
+  ctx.lineWidth   = outerA * 0.10;
+  ctx.stroke();
+
+  // Блик (дуга сверху-слева — имитация объёма)
+  ctx.beginPath();
+  ctx.ellipse(0, 0, outerA, outerB, 0, Math.PI * 1.15, Math.PI * 1.65);
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth   = outerA * 0.14;
+  ctx.stroke();
+
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// ── Искры при сборе колечка ──────────────────────────────
+function sparkleRing(x, y) {
+  const colors = ['#a0eeff', '#ffffff', '#80d8ff', '#b3f0ff', '#e0f7ff'];
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    const s = 1.5 + Math.random() * 3.5;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 2,
+      life: 18 + Math.floor(Math.random() * 12),
+      color: colors[Math.floor(Math.random() * colors.length)],
+      r: 1.5 + Math.random() * 2.5,
+    });
   }
 }
 
@@ -650,8 +950,10 @@ function drawParticles() {
 function endGame() {
   cancelAnimationFrame(animFrame);
   saveBest(score);
+  saveTotalCoins(coins);
   document.getElementById('go-score').textContent = score;
   document.getElementById('go-best').textContent  = getBest();
+  document.getElementById('go-coins').textContent = '🌀 ' + coins;
   document.getElementById('btn-retry').onclick    = startGame;
   showScreen('s-over');
 }

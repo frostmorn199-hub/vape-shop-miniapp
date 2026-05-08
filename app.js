@@ -453,6 +453,10 @@ function showScreen(name, navBtn) {
   if (target) target.classList.add("active");
   window.scrollTo(0, 0);
 
+  // Показываем табы только в каталоге
+  const tabsBar = document.getElementById("tabs-bar");
+  if (tabsBar) tabsBar.classList.toggle("hidden", name !== "catalog");
+
   // Обновляем nav кнопки
   if (navBtn) {
     document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));

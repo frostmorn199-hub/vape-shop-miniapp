@@ -93,6 +93,7 @@ clients_ws  = spreadsheet.worksheet("Клиенты")
 referrals_ws = None
 orders_ws    = None
 partners_ws  = None
+promos_ws    = None
 
 cart     = {}
 user_qty = {}
@@ -137,6 +138,21 @@ def init_sheets():
     except gspread.exceptions.WorksheetNotFound:
         partners_ws = spreadsheet.add_worksheet("Партнёры", rows=1000, cols=6)
         partners_ws.append_row(["ID", "Контакт", "Промокод", "Приглашено_всего", "Активных_рефералов", "Дата_регистрации"])
+
+    global promos_ws
+    try:
+        promos_ws = spreadsheet.worksheet("Промокоды_колесо")
+    except gspread.exceptions.WorksheetNotFound:
+        promos_ws = spreadsheet.add_worksheet("Промокоды_колесо", rows=1000, cols=6)
+        promos_ws.append_row(["Код", "Тип", "Скидка", "UID", "Использован", "Дата"])
+
+    # Добавляем колонку Промо_скидка в Клиенты если нет
+    try:
+        headers = clients_ws.row_values(1)
+        if "Промо_скидка" not in headers:
+            clients_ws.update_cell(1, len(headers) + 1, "Промо_скидка")
+    except Exception as e:
+        logging.error(f"init Промо_скидка: {e}")
 
     # Добавляем новые заголовки в Клиенты если их нет
     try:
@@ -311,6 +327,20 @@ def find_code_owner(code: str):
     return None
 
 def apply_promo_code(uid: int, code: str) -> tuple:
+    # Сначала проверяем промокоды колеса фортуны
+    wheel_promo = find_wheel_promo(code)
+    if wheel_promo:
+        if int(wheel_promo.get("Использован", 0)) == 1:
+            return False, "❌ Этот промокод уже был использован."
+        discount = int(wheel_promo.get("Скидка", 0))
+        mark_wheel_promo_used(code, uid)
+        set_user_wheel_discount(uid, discount)
+        return True, (
+            f"🎰 Промокод с колеса фортуны активирован!\n\n"
+            f"🏷️ Скидка {discount}% будет применена к твоему следующему заказу автоматически."
+        )
+
+    # Реферальный промокод
     owner_id = find_code_owner(code)
     if not owner_id:
         return False, "❌ Промокод не найден."
@@ -324,10 +354,63 @@ def apply_promo_code(uid: int, code: str) -> tuple:
     referrals_ws.append_row([owner_id, uid, now, 0])
     update_partners_row(owner_id)
     return True, (
-        f"✅ Промокод принят!\n\n"
+        f"✅ Реферальный промокод принят!\n\n"
         f"Сделай первую покупку на {MIN_REFERRAL_PURCHASE}₽+ и получи "
         f"{REFERRAL_BONUS_COINS} вейпкоинов на баланс 🎁"
     )
+
+
+# ── Промокоды колеса фортуны ────────────────────────────────
+
+def find_wheel_promo(code: str):
+    """Ищет промокод из колеса. Возвращает запись или None."""
+    if not promos_ws:
+        return None
+    try:
+        for r in promos_ws.get_all_records():
+            if r.get("Код", "").upper() == code.upper():
+                return r
+    except Exception as e:
+        logging.error(f"find_wheel_promo: {e}")
+    return None
+
+def mark_wheel_promo_used(code: str, uid: int):
+    """Помечает промокод как использованный."""
+    if not promos_ws:
+        return
+    try:
+        records = promos_ws.get_all_records()
+        for idx, r in enumerate(records):
+            if r.get("Код", "").upper() == code.upper():
+                promos_ws.update_cell(idx + 2, 4, uid)   # UID
+                promos_ws.update_cell(idx + 2, 5, 1)     # Использован
+                return
+    except Exception as e:
+        logging.error(f"mark_wheel_promo_used: {e}")
+
+def get_user_wheel_discount(uid: int) -> int:
+    """Возвращает скидку из промокода колеса (0 если нет активной)."""
+    try:
+        _, rec = _find_client_row(uid)
+        if rec:
+            return int(rec.get("Промо_скидка", 0) or 0)
+    except Exception as e:
+        logging.error(f"get_user_wheel_discount: {e}")
+    return 0
+
+def set_user_wheel_discount(uid: int, discount: int):
+    """Сохраняет скидку из колеса в запись клиента."""
+    try:
+        row_idx, rec = _find_client_row(uid)
+        if row_idx:
+            headers = clients_ws.row_values(1)
+            col = headers.index("Промо_скидка") + 1 if "Промо_скидка" in headers else len(headers)
+            clients_ws.update_cell(row_idx, col, discount)
+    except Exception as e:
+        logging.error(f"set_user_wheel_discount: {e}")
+
+def clear_user_wheel_discount(uid: int):
+    set_user_wheel_discount(uid, 0)
 
 
 # ── Заказы ──────────────────────────────────────────────────
@@ -999,7 +1082,9 @@ async def show_payment_options(msg: types.Message, state: FSMContext):
         for pid, qty in cart.get(uid, {}).items()
         for item in data_gs if item["ID"] == pid
     )
-    disc_sum    = int(raw_total * discount / 100)
+    wheel_discount = get_user_wheel_discount(uid)
+    total_discount = discount + wheel_discount
+    disc_sum    = int(raw_total * total_discount / 100)
     final_total = raw_total - disc_sum
 
     order_data = await state.get_data()
@@ -1008,7 +1093,11 @@ async def show_payment_options(msg: types.Message, state: FSMContext):
 
     text = f"💰 Сумма заказа: {raw_total:,}₽"
     if discount > 0:
-        text += f"\n🎁 Скидка {level_name} (-{discount}%): -{disc_sum:,}₽\n✅ К оплате: {final_total:,}₽"
+        text += f"\n🎁 Скидка {level_name} (-{discount}%): -{int(raw_total * discount / 100):,}₽"
+    if wheel_discount > 0:
+        text += f"\n🎰 Промокод колеса (-{wheel_discount}%): -{int(raw_total * wheel_discount / 100):,}₽"
+    if total_discount > 0:
+        text += f"\n✅ К оплате: {final_total:,}₽"
     if comment:
         text += f"\n💬 Комментарий: {comment}"
 
@@ -1055,9 +1144,13 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
                 products_ws.update_cell(idx + 2, 7, max(0, item["Остаток"] - qty))
                 items_for_json.append({"id": pid, "qty": qty})
 
-    disc_sum    = int(raw_total * discount / 100)
+    wheel_discount = get_user_wheel_discount(uid)
+    total_discount = discount + wheel_discount
+    disc_sum    = int(raw_total * total_discount / 100)
     final_total = raw_total - disc_sum
     cart[uid]   = {}
+    if wheel_discount > 0:
+        clear_user_wheel_discount(uid)
 
     pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
     delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
@@ -1070,7 +1163,11 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
 
     user_text = f"✅ Заказ оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
     if discount > 0:
-        user_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{disc_sum:,}₽\n✅ Итого: {final_total:,}₽"
+        user_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{int(raw_total * discount / 100):,}₽"
+    if wheel_discount > 0:
+        user_text += f"\n🎰 Промокод колеса (-{wheel_discount}%): -{int(raw_total * wheel_discount / 100):,}₽"
+    if total_discount > 0:
+        user_text += f"\n✅ Итого: {final_total:,}₽"
     user_text += (
         f"\n\n🚚 Получение: {delivery_label}\n"
         f"📍 Адрес: {address}\n"
@@ -1089,7 +1186,11 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         f"💰 Сумма: {raw_total:,}₽"
     )
     if discount > 0:
-        seller_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{disc_sum:,}₽\n✅ Итого: {final_total:,}₽"
+        seller_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{int(raw_total * discount / 100):,}₽"
+    if wheel_discount > 0:
+        seller_text += f"\n🎰 Промокод колеса (-{wheel_discount}%): -{int(raw_total * wheel_discount / 100):,}₽"
+    if total_discount > 0:
+        seller_text += f"\n✅ Итого: {final_total:,}₽"
     seller_text += (
         f"\n\n🚚 Тип: {delivery_label}\n"
         f"📍 Адрес: {address}\n"

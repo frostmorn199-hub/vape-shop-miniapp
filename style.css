@@ -16,7 +16,7 @@ body {
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-  padding-bottom: 90px;
+  padding-bottom: 126px; /* nav 62px + tabs 52px + зазор */
   font-size: 14px;
 }
 
@@ -68,10 +68,21 @@ body {
   transition: width 0.6s ease;
 }
 
-/* ── TABS ────────────────────────────────── */
+/* ── TABS BAR (фиксированная полоса над навигацией) ─────── */
+.tabs-bar {
+  position: fixed;
+  bottom: 62px; /* высота bottom-nav */
+  left: 0; right: 0;
+  z-index: 150;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+}
+.tabs-bar.hidden { display: none; }
+
 .tabs {
   display: flex; gap: 8px; overflow-x: auto;
-  padding: 12px 16px 8px; scrollbar-width: none;
+  padding: 4px 12px; scrollbar-width: none;
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tab {
@@ -238,6 +249,129 @@ body {
 }
 .btn-primary:active { opacity: .8; }
 .btn-confirm { margin-top: 8px; }
+
+/* ── BOTTOM NAV ──────────────────────────── */
+.bottom-nav {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+  display: flex; gap: 8px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+}
+.nav-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 8px 6px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--hint);
+  font-size: 11px; cursor: pointer;
+  transition: border-color .2s, color .2s, background .2s;
+  position: relative;
+}
+.nav-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(230, 92, 0, 0.08);
+}
+.nav-btn:active { transform: scale(.97); }
+.nav-icon { font-size: 20px; line-height: 1; }
+.nav-label { font-size: 11px; font-weight: 600; }
+.nav-badge {
+  display: inline-block;
+  background: var(--accent); color: #fff;
+  font-size: 10px; font-weight: 700;
+  border-radius: 10px; padding: 1px 5px;
+  min-width: 16px; text-align: center;
+}
+
+/* ── LOYALTY SCREEN ──────────────────────── */
+.loyalty-screen-body {
+  padding: 12px 12px 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.loy-section-title {
+  font-size: 15px; font-weight: 700;
+  color: var(--text); padding: 4px 0 0;
+}
+.loy-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.loy-card-title {
+  font-size: 13px; font-weight: 700; color: var(--hint);
+}
+
+/* Вейпкоины */
+.coins-card {
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  border-color: rgba(230,92,0,0.3);
+}
+.coins-amount {
+  font-size: 36px; font-weight: 800;
+  background: linear-gradient(135deg, #e65c00, #ffd200);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.coins-hint { font-size: 12px; color: var(--hint); }
+
+/* Уровень + прогресс */
+.loy-level-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.loy-badge {
+  font-size: 13px; font-weight: 700;
+  padding: 4px 10px; border-radius: 20px;
+}
+.ref-badge { background: linear-gradient(135deg, #e65c00, #ffd200); color: #111; }
+.spend-badge { background: linear-gradient(135deg, #5533ff, #aa55ff); color: #fff; }
+.loy-badge.no-level { background: var(--border); color: var(--hint); }
+.loy-hint { font-size: 12px; color: var(--hint); }
+
+.loy-progress-label {
+  display: flex; justify-content: space-between;
+  font-size: 12px; color: var(--hint);
+}
+.ref-fill { background: linear-gradient(90deg, #e65c00, #ffd200); }
+
+/* Реферальный код */
+.ref-code-card { gap: 10px; }
+.ref-code-block {
+  background: rgba(255,255,255,0.05);
+  border: 1px dashed var(--accent);
+  border-radius: 8px; padding: 12px;
+  text-align: center;
+}
+.ref-code-text {
+  font-size: 24px; font-weight: 800; letter-spacing: 4px;
+  color: var(--accent); font-family: monospace;
+}
+.ref-code-actions { display: flex; gap: 8px; }
+.ref-btn {
+  flex: 1; padding: 10px 8px; border-radius: 8px; border: none;
+  background: var(--accent); color: var(--accent-txt);
+  font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity .2s;
+}
+.ref-btn:active { opacity: .75; }
+.ref-btn-share { background: #1a73e8; }
+.ref-code-hint { font-size: 12px; color: var(--hint); text-align: center; line-height: 1.5; }
+
+/* Уровни (сетка) */
+.loy-levels-grid {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.loy-level-item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px;
+  font-size: 13px;
+}
+.loy-level-item.done { border-color: rgba(230,92,0,0.4); }
+.li-mark { font-size: 16px; flex-shrink: 0; }
+.li-name { font-weight: 700; flex: 1; }
+.li-val  { font-size: 12px; color: var(--hint); text-align: right; }
 
 /* ── UTILS ───────────────────────────────── */
 .hidden { display: none !important; }

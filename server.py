@@ -241,8 +241,8 @@ def add_coins():
         if not uid or smoke <= 0:
             return jsonify({"ok": False, "error": "invalid params"}), 400
 
-        vc_earned = round(smoke * 0.1, 1)
-        if vc_earned < 0.1:
+        vc_earned = round(smoke * 0.01, 2)
+        if vc_earned < 0.01:
             return jsonify({"ok": True, "earned": 0})
 
         records = clients_ws.get_all_records()
@@ -256,7 +256,7 @@ def add_coins():
             try:
                 if int(r.get("ID", 0) or 0) == uid:
                     current = float(r.get("Вейпкоины", 0) or 0)
-                    new_val = round(current + vc_earned, 1)
+                    new_val = round(current + vc_earned, 2)
                     clients_ws.update_cell(idx + 2, vc_col, new_val)
                     logging.info(f"add_coins uid={uid} smoke={smoke} +{vc_earned} => {new_val}")
                     return jsonify({"ok": True, "earned": vc_earned, "total": new_val})

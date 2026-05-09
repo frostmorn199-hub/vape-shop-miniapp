@@ -276,7 +276,7 @@ function renderProducts() {
     const qty   = cardQty[id] || 1;
     const photo = normalizePhotoUrl(p["Фото"] || "");
     const imgHtml = photo
-      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.parentElement.style.display='none'"></div>`
+      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23888%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2212%22>нет фото</text></svg>'"></div>`
       : "";
     return `
       <div class="product-card">

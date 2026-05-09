@@ -33,6 +33,11 @@
     <div class="tabs" id="tabs"></div>
   </div>
 
+  <!-- BRAND FILTER (shown when category is selected) -->
+  <div class="tabs-bar brands-bar hidden" id="brands-bar">
+    <div class="tabs" id="brands"></div>
+  </div>
+
   <!-- BOTTOM NAV -->
   <nav class="bottom-nav">
     <button class="nav-btn active" data-screen="catalog" onclick="showScreen('catalog', this)">
@@ -129,6 +134,16 @@
           <div class="radio-content">
             <span class="radio-icon">💵</span>
             <div class="radio-title">Наличные</div>
+          </div>
+        </label>
+        <label id="vcoin-pay-option" class="radio-card hidden">
+          <input type="radio" name="pay" value="vcoin" onchange="renderOrderSummary()">
+          <div class="radio-content">
+            <span class="radio-icon">🪙</span>
+            <div>
+              <div class="radio-title">Оплатить VCoin</div>
+              <div class="radio-sub">Только для товаров категории VCoin</div>
+            </div>
           </div>
         </label>
       </div>

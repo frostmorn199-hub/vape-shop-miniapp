@@ -1335,9 +1335,10 @@ async def web_app_order(msg: types.Message):
         contact  = data.get("contact", "—")
         address  = data.get("address", PICKUP_ADDRESS)
         delivery = data.get("delivery", "pickup")
-        pay      = data.get("pay", "card")
-        items    = data.get("items", [])
-        comment  = data.get("comment", "")
+        pay         = data.get("pay", "card")
+        items       = data.get("items", [])
+        comment     = data.get("comment", "")
+        vcoin_total = int(data.get("vcoin_total", 0) or 0)
 
         user_total  = get_user_total(uid)
         level_name, discount = get_loyalty(user_total)
@@ -1373,11 +1374,26 @@ async def web_app_order(msg: types.Message):
             items_for_json.append({"id": it["id"], "qty": it["qty"]})
 
         summary = "\n".join(order_lines)
-        pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
+
+        # VCoin-оплата: проверяем и списываем VCoin
+        if vcoin_total > 0:
+            user_coins = get_vaypecoins(uid)
+            if user_coins < vcoin_total:
+                await msg.answer(f"❌ Недостаточно VCoin! Нужно {vcoin_total} VC, у тебя {user_coins} VC.")
+                return
+            add_vaypecoins(uid, -vcoin_total)
+
+        if pay == "vcoin":
+            pay_label = "VCoin 🪙"
+        elif pay == "card":
+            pay_label = "Перевод на карту"
+        else:
+            pay_label = "Наличные"
+
         delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
         order_id       = f"{uid}_{int(time.time())}"
 
-        # Сохраняем заказ (продажа запишется только после подтверждения продавцом)
+        # Сохраняем заказ
         save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay,
                    summary, json.dumps(items_for_json))
 
@@ -1390,6 +1406,8 @@ async def web_app_order(msg: types.Message):
             else:
                 user_text += f"\n🚚 Доставка: бесплатно 🎉"
         user_text += f"\n✅ Итого: {final_total:,}₽"
+        if vcoin_total > 0:
+            user_text += f"\n🪙 Списано VCoin: {vcoin_total} VC"
         user_text += (
             f"\n\n🚚 Получение: {delivery_label}\n"
             f"📍 Адрес: {address}\n"
@@ -1412,6 +1430,8 @@ async def web_app_order(msg: types.Message):
             else:
                 seller_text += f"\n🚚 Доставка: бесплатно 🎉"
         seller_text += f"\n✅ Итого: {final_total:,}₽"
+        if vcoin_total > 0:
+            seller_text += f"\n🪙 Оплачено VCoin: {vcoin_total} VC"
         seller_text += f"\n\n🚚 Тип: {delivery_label}\n📍 Адрес: {address}\n💳 Оплата: {pay_label}"
         if comment:
             seller_text += f"\n💬 Комментарий: {comment}"

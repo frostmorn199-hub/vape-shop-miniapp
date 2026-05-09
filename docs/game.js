@@ -42,7 +42,7 @@ const PRIZE_TEXTS = {
 };
 
 // ─── API ────────────────────────────────────────────────
-const BASE_URL = window.location.origin;
+const BASE_URL = "https://vape-shop-miniapp.onrender.com";
 const TG_UID   = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || "";
 
 async function registerPromoCode(code, type, discount) {
@@ -54,6 +54,19 @@ async function registerPromoCode(code, type, discount) {
     });
   } catch (e) {
     console.warn("registerPromoCode failed", e);
+  }
+}
+
+async function addCoinsToBalance(smokeCount) {
+  if (!TG_UID || smokeCount <= 0) return;
+  try {
+    await fetch(`${BASE_URL}/api/add-coins`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid: TG_UID, smoke: smokeCount }),
+    });
+  } catch (e) {
+    console.warn("addCoinsToBalance failed", e);
   }
 }
 
@@ -951,6 +964,7 @@ function endGame() {
   cancelAnimationFrame(animFrame);
   saveBest(score);
   saveTotalCoins(coins);
+  addCoinsToBalance(coins);
   document.getElementById('go-score').textContent = score;
   document.getElementById('go-best').textContent  = getBest();
   document.getElementById('go-coins').textContent = '🌀 ' + coins;

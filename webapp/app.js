@@ -33,7 +33,8 @@ const FREE_DELIVERY_THRESHOLD = 2000;
 let products   = [];
 let cart       = JSON.parse(localStorage.getItem("vape_cart") || "{}");
 let cardQty    = {};
-let currentCat = "all";
+let currentCat  = "all";
+let currentBrand = null;
 let loyalty    = {
   total: 0, level: null, discount: 0, next_threshold: 20_000,
   vaypecoins: 0, ref_code: "", ref_count: 0,
@@ -82,9 +83,54 @@ function buildTabs() {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
       btn.classList.add("active");
-      currentCat = key;
+      currentCat  = key;
+      currentBrand = null;
       renderProducts();
     });
+    wrap.appendChild(btn);
+  });
+}
+
+
+// ── BRAND BAR ─────────────────────────────────────────────
+
+function buildBrandBar(cat) {
+  const bar  = document.getElementById("brands-bar");
+  const wrap = document.getElementById("brands");
+  if (!bar || !wrap) return;
+
+  if (cat === "all") { bar.classList.add("hidden"); return; }
+
+  const brands = [...new Set(
+    products.filter(p => p["Категория"] === cat).map(p => p["Бренд"]).filter(Boolean)
+  )].sort();
+
+  if (brands.length < 2) { bar.classList.add("hidden"); currentBrand = null; return; }
+
+  bar.classList.remove("hidden");
+  wrap.innerHTML = "";
+
+  const allBtn = document.createElement("button");
+  allBtn.className = "tab" + (!currentBrand ? " active" : "");
+  allBtn.textContent = "Все";
+  allBtn.onclick = () => {
+    wrap.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    allBtn.classList.add("active");
+    currentBrand = null;
+    renderProducts();
+  };
+  wrap.appendChild(allBtn);
+
+  brands.forEach(brand => {
+    const btn = document.createElement("button");
+    btn.className = "tab" + (currentBrand === brand ? " active" : "");
+    btn.textContent = brand;
+    btn.onclick = () => {
+      wrap.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      currentBrand = brand;
+      renderProducts();
+    };
     wrap.appendChild(btn);
   });
 }
@@ -219,9 +265,22 @@ function buildLoyaltyScreen() {
 function updateCheckoutVC() {
   const coins = loyalty.vaypecoins || 0;
   const el = document.getElementById("checkout-vc");
-  const block = document.getElementById("vc-balance-block");
   if (el) el.textContent = `${coins.toLocaleString("ru")} VC`;
-  if (block) block.classList.remove("hidden");
+
+  // Show VCoin payment option only if cart has VCoin items
+  const vcBlock  = document.getElementById("vcoin-pay-option");
+  const vcInfo   = document.getElementById("vc-balance-block");
+  const hasVC    = hasVCoinItems();
+  const vct      = hasVC ? vcoinItemsTotal() : 0;
+
+  if (vcBlock) vcBlock.classList.toggle("hidden", !hasVC);
+  if (vcInfo)  vcInfo.classList.toggle("hidden",  !hasVC);
+
+  // If no VCoin items, force card selection
+  if (!hasVC) {
+    const cardRadio = document.querySelector('input[name="pay"][value="card"]');
+    if (cardRadio) cardRadio.checked = true;
+  }
 }
 
 function copyRefCode() {
@@ -261,10 +320,13 @@ function normalizePhotoUrl(url) {
 // ── PRODUCTS ──────────────────────────────────────────────────
 
 function renderProducts() {
+  buildBrandBar(currentCat);
   const grid = document.getElementById("products-grid");
-  const list = currentCat === "all"
+
+  let list = currentCat === "all"
     ? products
     : products.filter(p => p["Категория"] === currentCat);
+  if (currentBrand) list = list.filter(p => p["Бренд"] === currentBrand);
 
   if (!list.length) {
     grid.innerHTML = '<div class="placeholder">Товаров нет 🤷</div>';
@@ -273,18 +335,20 @@ function renderProducts() {
 
   grid.innerHTML = list.map(p => {
     const id    = p["ID"];
-    const qty   = cardQty[id] || 1;
+    const stock = p["Остаток"] || 0;
+    const qty   = Math.min(cardQty[id] || 1, stock);
     const photo = normalizePhotoUrl(p["Фото"] || "");
     const imgHtml = photo
       ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.parentElement.style.display='none'"></div>`
       : "";
+    const isVC = p["Категория"] === "VCoin";
     return `
       <div class="product-card">
         ${imgHtml}
         <div class="p-name">${p["Название"]}</div>
         <div class="p-brand">${p["Бренд"]}${p["Затяжки"] ? " · " + p["Затяжки"] + " тяг" : ""}</div>
-        <div class="p-price">${p["Цена (₽)"].toLocaleString("ru")}₽</div>
-        <div class="p-stock">Остаток: ${p["Остаток"]} шт</div>
+        <div class="p-price">${isVC ? `<span class="vc-price">🪙 ${p["Цена (₽)"].toLocaleString("ru")} VC</span>` : `${p["Цена (₽)"].toLocaleString("ru")}₽`}</div>
+        <div class="p-stock" style="color:${stock <= 3 ? '#e74c3c' : 'var(--hint)'}">Остаток: ${stock} шт</div>
         <div class="p-actions">
           <button class="qty-btn" onclick="changeCardQty(${id},-1)">−</button>
           <span class="qty-val" id="cqty-${id}">${qty}</span>
@@ -296,14 +360,25 @@ function renderProducts() {
 }
 
 function changeCardQty(id, delta) {
-  cardQty[id] = Math.max(1, (cardQty[id] || 1) + delta);
+  const product = products.find(p => p["ID"] === id);
+  const max = product ? (product["Остаток"] || 1) : 999;
+  cardQty[id] = Math.min(max, Math.max(1, (cardQty[id] || 1) + delta));
   const el = document.getElementById(`cqty-${id}`);
   if (el) el.textContent = cardQty[id];
 }
 
 function addToCart(id) {
-  const qty = cardQty[id] || 1;
-  cart[id]  = (cart[id] || 0) + qty;
+  const product = products.find(p => p["ID"] === id);
+  const stock   = product ? (product["Остаток"] || 0) : 0;
+  const qty     = cardQty[id] || 1;
+  const already = cart[id] || 0;
+
+  if (already >= stock) {
+    tg.showAlert("Больше нет в наличии!");
+    return;
+  }
+
+  cart[id] = Math.min(already + qty, stock);
   saveCart();
   updateFab();
   tg.HapticFeedback?.impactOccurred("light");
@@ -371,6 +446,12 @@ function renderCart() {
     html += `<div class="total-row discount"><span>Скидка ${loyalty.level} (${disc}%)</span><span>−${discSum.toLocaleString("ru")}₽</span></div>`;
   }
   html += `<div class="total-row delivery-info-row"><span>🚚 Доставка</span><span>${itemsTotal >= FREE_DELIVERY_THRESHOLD ? "бесплатно 🎉" : `+${DELIVERY_FEE.toLocaleString("ru")}₽ (от ${FREE_DELIVERY_THRESHOLD.toLocaleString("ru")}₽)`}</span></div>`;
+  if (hasVCoinItems()) {
+    const vct = vcoinItemsTotal();
+    const coins = loyalty.vaypecoins || 0;
+    const canPay = coins >= vct;
+    html += `<div class="total-row" style="color:${canPay ? '#f0c040' : '#e74c3c'}">🪙 VCoin-товары: ${vct.toLocaleString("ru")} VC ${canPay ? `(баланс: ${coins} VC ✓)` : `(не хватает: нужно ${vct}, есть ${coins})`}</div>`;
+  }
   html += `<div class="total-row final"><span>Итого</span><span>${itemsTotal.toLocaleString("ru")}₽</span></div>`;
   totalEl.innerHTML = html;
 }
@@ -378,13 +459,26 @@ function renderCart() {
 function changeCartQty(id, delta) {
   const nq = (cart[id] || 1) + delta;
   if (nq <= 0) { removeFromCart(id); return; }
-  cart[id] = nq;
+  const product = products.find(p => p["ID"] === id);
+  const max = product ? (product["Остаток"] || 999) : 999;
+  cart[id] = Math.min(nq, max);
   saveCart(); updateFab(); renderCart();
 }
 
 function removeFromCart(id) {
   delete cart[id];
   saveCart(); updateFab(); renderCart();
+}
+
+
+function hasVCoinItems() {
+  return products.some(p => cart[p["ID"]] > 0 && p["Категория"] === "VCoin");
+}
+
+function vcoinItemsTotal() {
+  return products
+    .filter(p => cart[p["ID"]] > 0 && p["Категория"] === "VCoin")
+    .reduce((s, p) => s + p["Цена (₽)"] * cart[p["ID"]], 0);
 }
 
 
@@ -440,6 +534,14 @@ function renderOrderSummary() {
 
   const final = itemsTotal + deliveryFee;
   html += `<br><strong>✅ Итого: ${final.toLocaleString("ru")}₽</strong>`;
+
+  const pay = document.querySelector('input[name="pay"]:checked')?.value;
+  if (pay === "vcoin" || hasVCoinItems()) {
+    const vct   = vcoinItemsTotal();
+    const coins = loyalty.vaypecoins || 0;
+    html += `<br>🪙 VCoin-оплата: ${vct.toLocaleString("ru")} VC из ${coins.toLocaleString("ru")} VC`;
+  }
+
   document.getElementById("order-summary").innerHTML = html;
 }
 
@@ -460,17 +562,28 @@ function submitOrder() {
   const inCart = products.filter(p => cart[p["ID"]] > 0);
   if (!inCart.length) { tg.showAlert("Корзина пустая"); return; }
 
+  // VCoin validation
+  const vct = vcoinItemsTotal();
+  if (vct > 0) {
+    const coins = loyalty.vaypecoins || 0;
+    if (coins < vct) {
+      tg.showAlert(`Недостаточно VCoin! Нужно ${vct} VC, у тебя ${coins} VC`);
+      return;
+    }
+  }
+
   const items = inCart.map(p => ({
-    id:    p["ID"],
-    name:  p["Название"],
-    qty:   cart[p["ID"]],
-    price: p["Цена (₽)"],
+    id:       p["ID"],
+    name:     p["Название"],
+    qty:      cart[p["ID"]],
+    price:    p["Цена (₽)"],
+    category: p["Категория"],
   }));
 
   cart = {};
   saveCart();
 
-  tg.sendData(JSON.stringify({ contact, delivery, address, pay, items, comment }));
+  tg.sendData(JSON.stringify({ contact, delivery, address, pay, items, comment, vcoin_total: vct }));
 }
 
 
@@ -493,7 +606,7 @@ function showScreen(name, navBtn) {
   }
 
   if (name === "cart")     renderCart();
-  if (name === "checkout") renderOrderSummary();
+  if (name === "checkout") { renderOrderSummary(); updateCheckoutVC(); }
   if (name === "loyalty")  buildLoyaltyScreen();
 
   // Управление главной кнопкой TG

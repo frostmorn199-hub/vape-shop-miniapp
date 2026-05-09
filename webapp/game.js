@@ -57,6 +57,19 @@ async function registerPromoCode(code, type, discount) {
   }
 }
 
+async function addCoinsToBalance(smokeCount) {
+  if (!TG_UID || smokeCount <= 0) return;
+  try {
+    await fetch(`${BASE_URL}/api/add-coins`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid: TG_UID, smoke: smokeCount }),
+    });
+  } catch (e) {
+    console.warn("addCoinsToBalance failed", e);
+  }
+}
+
 // ─── Сторадж ────────────────────────────────────────────
 const genCode      = p  => p + '-' + Math.random().toString(36).slice(2,8).toUpperCase();
 const todayKey     = () => new Date().toISOString().slice(0,10);
@@ -951,6 +964,7 @@ function endGame() {
   cancelAnimationFrame(animFrame);
   saveBest(score);
   saveTotalCoins(coins);
+  addCoinsToBalance(coins);
   document.getElementById('go-score').textContent = score;
   document.getElementById('go-best').textContent  = getBest();
   document.getElementById('go-coins').textContent = '🌀 ' + coins;

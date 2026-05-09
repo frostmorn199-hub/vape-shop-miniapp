@@ -231,5 +231,43 @@ def proxy_photo(file_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/add-coins", methods=["POST"])
+def add_coins():
+    """Начисляет VCoin за собранный дымок в игре (10 дымков = 1 VC)."""
+    try:
+        data  = request.get_json()
+        uid   = int(data.get("uid", 0) or 0)
+        smoke = int(data.get("smoke", 0) or 0)
+        if not uid or smoke <= 0:
+            return jsonify({"ok": False, "error": "invalid params"}), 400
+
+        vc_earned = round(smoke * 0.1, 1)
+        if vc_earned < 0.1:
+            return jsonify({"ok": True, "earned": 0})
+
+        records = clients_ws.get_all_records()
+        headers = clients_ws.row_values(1)
+        try:
+            vc_col = headers.index("Вейпкоины") + 1
+        except ValueError:
+            return jsonify({"ok": False, "error": "no VC column"}), 500
+
+        for idx, r in enumerate(records):
+            try:
+                if int(r.get("ID", 0) or 0) == uid:
+                    current = float(r.get("Вейпкоины", 0) or 0)
+                    new_val = round(current + vc_earned, 1)
+                    clients_ws.update_cell(idx + 2, vc_col, new_val)
+                    logging.info(f"add_coins uid={uid} smoke={smoke} +{vc_earned} => {new_val}")
+                    return jsonify({"ok": True, "earned": vc_earned, "total": new_val})
+            except Exception:
+                continue
+
+        return jsonify({"ok": False, "error": "user not found"}), 404
+    except Exception as e:
+        logging.error(f"add_coins: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

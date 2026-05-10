@@ -24,7 +24,7 @@ const CATEGORIES = [
   { key: "Жидкость",  label: "💧 Жидкости" },
   { key: "Табак",     label: "🚬 Табак" },
   { key: "Устройство",label: "⚙️ Устройства" },
-  { key: "VCoin",     label: "🪙 Товары VC" },
+  { key: "Товары VC", label: "🪙 Товары VC" },
 ];
 
 const DELIVERY_FEE = 250;
@@ -341,7 +341,7 @@ function renderProducts() {
     const imgHtml = photo
       ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23888%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2212%22>нет фото</text></svg>'"></div>`
       : "";
-    const isVC = p["Категория"] === "VCoin";
+    const isVC = p["Категория"] === "Товары VC";
     return `
       <div class="product-card">
         ${imgHtml}
@@ -472,12 +472,12 @@ function removeFromCart(id) {
 
 
 function hasVCoinItems() {
-  return products.some(p => cart[p["ID"]] > 0 && p["Категория"] === "VCoin");
+  return products.some(p => cart[p["ID"]] > 0 && p["Категория"] === "Товары VC");
 }
 
 function vcoinItemsTotal() {
   return products
-    .filter(p => cart[p["ID"]] > 0 && p["Категория"] === "VCoin")
+    .filter(p => cart[p["ID"]] > 0 && p["Категория"] === "Товары VC")
     .reduce((s, p) => s + p["Цена (₽)"] * cart[p["ID"]], 0);
 }
 

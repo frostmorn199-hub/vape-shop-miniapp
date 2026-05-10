@@ -13,6 +13,7 @@ import json
 import random
 import string
 import time
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 
@@ -113,6 +114,12 @@ class PromoState(StatesGroup):
 class AdjustStockState(StatesGroup):
     waiting_product_name = State()
     waiting_quantity = State()
+
+class BroadcastState(StatesGroup):
+    waiting_message = State()
+
+class NotifyState(StatesGroup):
+    waiting_product = State()
 
 
 # ── Инициализация листов ────────────────────────────────────
@@ -454,12 +461,25 @@ def set_order_status(order_id: str, status: str):
         logging.error(f"set_order_status: {e}")
     return False
 
-def seller_kb(order_id: str) -> InlineKeyboardMarkup:
+PICKUP_STATUSES = [
+    ("Заказ принят",    "📦 Твой заказ принят! Начинаем обработку."),
+    ("Готовим",         "🔧 Готовим твой заказ, ожидай!"),
+    ("Готово к выдаче", "✅ Твой заказ готов к выдаче! Ждём тебя 🏪"),
+]
+DELIVERY_STATUSES = [
+    ("Собираем заказ",          "📦 Собираем твой заказ!"),
+    ("Отправлен в доставку",    "🚚 Заказ отправлен в доставку! Ожидай курьера."),
+    ("Заказ успешно доставлен", "✅ Заказ успешно доставлен! Спасибо за покупку 🙌"),
+]
+
+def seller_kb(order_id: str, delivery: str = "pickup", step: int = 0) -> InlineKeyboardMarkup:
+    """step = index of the next status to set (0-based)."""
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("✅ Подтвердить выдачу", callback_data=f"order_confirm_{order_id}"),
-        InlineKeyboardButton("❌ Отменить",            callback_data=f"order_cancel_{order_id}")
-    )
+    statuses = DELIVERY_STATUSES if delivery == "courier" else PICKUP_STATUSES
+    if step < len(statuses):
+        label, _ = statuses[step]
+        kb.add(InlineKeyboardButton(f"✅ {label}", callback_data=f"sts_{order_id}_{step}"))
+    kb.add(InlineKeyboardButton("❌ Отменить", callback_data=f"order_cancel_{order_id}"))
     return kb
 
 
@@ -898,6 +918,54 @@ async def confirm_order(call: types.CallbackQuery):
 
     await process_order_confirmed(order_id)
 
+@dp.callback_query_handler(lambda c: c.data.startswith("sts_"))
+async def status_step(call: types.CallbackQuery):
+    if call.from_user.id not in SELLER_IDS:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    # callback format: sts_{uid}_{timestamp}_{step}
+    parts = call.data.split("_")
+    step = int(parts[-1])
+    order_id = "_".join(parts[1:-1])  # reconstruct "uid_timestamp"
+
+    order = get_order(order_id)
+    if not order:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+
+    delivery_type = order.get("Тип", "Самовывоз")
+    is_courier = delivery_type == "Доставка"
+    statuses = DELIVERY_STATUSES if is_courier else PICKUP_STATUSES
+
+    if step >= len(statuses):
+        await call.answer("Все статусы уже выставлены", show_alert=True)
+        return
+
+    label, buyer_msg = statuses[step]
+    uid = int(order.get("Покупатель_ID", 0))
+
+    set_order_status(order_id, label)
+    try:
+        await bot.send_message(uid, buyer_msg)
+    except Exception as e:
+        logging.error(f"notify buyer status step {step}: {e}")
+
+    next_step = step + 1
+    is_final = next_step >= len(statuses)
+
+    if is_final:
+        await call.message.edit_reply_markup(None)
+        await call.message.reply(f"✅ Статус «{label}» — заказ завершён!")
+        await call.answer(label)
+        write_order_to_sales(order_id)
+        await process_order_confirmed(order_id)
+    else:
+        delivery_key = "courier" if is_courier else "pickup"
+        next_kb = seller_kb(order_id, delivery_key, next_step)
+        await call.message.edit_reply_markup(next_kb)
+        await call.answer(f"✅ {label}")
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("order_cancel_"))
 async def cancel_order(call: types.CallbackQuery):
     if call.from_user.id not in SELLER_IDS:
@@ -908,7 +976,8 @@ async def cancel_order(call: types.CallbackQuery):
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
-    if order.get("Статус") in ("confirmed", "Отменен"):
+    final_statuses = [s[0] for s in PICKUP_STATUSES[-1:]] + [s[0] for s in DELIVERY_STATUSES[-1:]]
+    if order.get("Статус") in (["confirmed", "Отменен"] + final_statuses):
         await call.answer("Заказ уже обработан", show_alert=True)
         return
 
@@ -1320,9 +1389,160 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
 
     for seller_id in SELLER_IDS:
         try:
-            await bot.send_message(seller_id, seller_text, reply_markup=seller_kb(order_id))
+            await bot.send_message(seller_id, seller_text,
+                                   reply_markup=seller_kb(order_id, delivery, step=0))
         except Exception as e:
             logging.error(f"Ошибка отправки продавцу {seller_id}: {e}")
+
+
+# ── Рассылка ─────────────────────────────────────────────────
+
+@dp.message_handler(commands=["broadcast"], state="*")
+async def broadcast_cmd(msg: types.Message, state: FSMContext):
+    if msg.from_user.id not in SELLER_IDS:
+        await msg.answer("❌ Команда доступна только продавцам.")
+        return
+    await state.finish()
+    await BroadcastState.waiting_message.set()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_broadcast"))
+    await msg.answer(
+        "📢 Введи текст рассылки (поддерживается Markdown).\n"
+        "Отправь /cancel для отмены:",
+        reply_markup=kb
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_broadcast", state=BroadcastState.waiting_message)
+async def cancel_broadcast(call: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await call.answer("Рассылка отменена")
+    await call.message.edit_reply_markup(None)
+
+@dp.message_handler(commands=["cancel"], state=BroadcastState.waiting_message)
+async def cancel_broadcast_cmd(msg: types.Message, state: FSMContext):
+    await state.finish()
+    await msg.answer("Рассылка отменена.")
+
+@dp.message_handler(state=BroadcastState.waiting_message)
+async def do_broadcast(msg: types.Message, state: FSMContext):
+    await state.finish()
+    broadcast_text = msg.text or msg.caption or ""
+    if not broadcast_text:
+        await msg.answer("❌ Пустое сообщение. Рассылка отменена.")
+        return
+
+    try:
+        records = clients_ws.get_all_records()
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка получения клиентов: {e}")
+        return
+
+    uids = []
+    for r in records:
+        try:
+            uid_val = int(r.get("ID", 0) or 0)
+            if uid_val > 0:
+                uids.append(uid_val)
+        except (ValueError, TypeError):
+            continue
+
+    if not uids:
+        await msg.answer("❌ Список клиентов пуст.")
+        return
+
+    status_msg = await msg.answer(f"📢 Начинаю рассылку для {len(uids)} пользователей…")
+    sent, failed = 0, 0
+    for uid in uids:
+        try:
+            await bot.send_message(uid, broadcast_text, parse_mode="Markdown")
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    await status_msg.edit_text(
+        f"📢 Рассылка завершена!\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
+    )
+
+
+# ── Уведомления о наличии ─────────────────────────────────────
+
+# Структура: { uid: [product_keyword, ...] }
+_notify_subscriptions: dict = {}
+
+@dp.message_handler(commands=["notify"], state="*")
+async def notify_cmd(msg: types.Message, state: FSMContext):
+    await state.finish()
+    await NotifyState.waiting_product.set()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_notify"))
+    await msg.answer(
+        "🔔 Введи название товара или бренда, о поступлении которого хочешь получить уведомление:",
+        reply_markup=kb
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_notify", state=NotifyState.waiting_product)
+async def cancel_notify(call: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await call.answer("Отменено")
+    await call.message.edit_reply_markup(None)
+
+@dp.message_handler(state=NotifyState.waiting_product)
+async def save_notify(msg: types.Message, state: FSMContext):
+    await state.finish()
+    keyword = msg.text.strip().lower()
+    uid = msg.from_user.id
+    if uid not in _notify_subscriptions:
+        _notify_subscriptions[uid] = []
+    if keyword not in _notify_subscriptions[uid]:
+        _notify_subscriptions[uid].append(keyword)
+    await msg.answer(
+        f"✅ Подписка оформлена!\nКак только «{msg.text.strip()}» появится в наличии — уведомим тебя 🔔"
+    )
+
+@dp.message_handler(commands=["checkstock"], state="*")
+async def checkstock_cmd(msg: types.Message):
+    if msg.from_user.id not in SELLER_IDS:
+        await msg.answer("❌ Команда доступна только продавцам.")
+        return
+    if not _notify_subscriptions:
+        await msg.answer("📭 Нет активных подписок на уведомления.")
+        return
+
+    try:
+        products = products_ws.get_all_records()
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка: {e}")
+        return
+
+    notified = 0
+    for uid, keywords in list(_notify_subscriptions.items()):
+        still_waiting = []
+        for kw in keywords:
+            # Проверяем, есть ли товар в наличии
+            matches = [
+                p for p in products
+                if (kw in p.get("Название", "").lower() or kw in p.get("Бренд", "").lower())
+                and int(p.get("Остаток", 0) or 0) > 0
+            ]
+            if matches:
+                names = ", ".join(m["Название"] for m in matches[:3])
+                try:
+                    await bot.send_message(
+                        uid,
+                        f"🔔 Товар появился в наличии!\n\n{names}\n\nОткрой магазин для покупки 🛒"
+                    )
+                    notified += 1
+                except Exception as e:
+                    logging.error(f"checkstock notify {uid}: {e}")
+            else:
+                still_waiting.append(kw)
+        if still_waiting:
+            _notify_subscriptions[uid] = still_waiting
+        else:
+            del _notify_subscriptions[uid]
+
+    await msg.answer(f"✅ Проверка завершена. Уведомлено пользователей: {notified}")
 
 
 # ── Mini App: заказ из веб-приложения ───────────────────────
@@ -1438,7 +1658,8 @@ async def web_app_order(msg: types.Message):
 
         for seller_id in SELLER_IDS:
             try:
-                await bot.send_message(seller_id, seller_text, reply_markup=seller_kb(order_id))
+                await bot.send_message(seller_id, seller_text,
+                                       reply_markup=seller_kb(order_id, delivery, step=0))
             except Exception as e:
                 logging.error(f"Ошибка отправки продавцу {seller_id}: {e}")
 
@@ -1452,11 +1673,14 @@ async def web_app_order(msg: types.Message):
 async def on_startup(dp):
     init_sheets()
     await bot.set_my_commands([
-        types.BotCommand("start",   "Главное меню"),
-        types.BotCommand("app",     "Открыть Mini App"),
-        types.BotCommand("loyalty", "Моя лояльность"),
-        types.BotCommand("cart",    "Корзина"),
-        types.BotCommand("stock",   "Скорректировать остаток товара (продавцы)"),
+        types.BotCommand("start",      "Главное меню"),
+        types.BotCommand("app",        "Открыть Mini App"),
+        types.BotCommand("loyalty",    "Моя лояльность"),
+        types.BotCommand("cart",       "Корзина"),
+        types.BotCommand("notify",     "Уведомить о поступлении товара"),
+        types.BotCommand("stock",      "Скорректировать остаток (продавцы)"),
+        types.BotCommand("broadcast",  "Рассылка всем клиентам (продавцы)"),
+        types.BotCommand("checkstock", "Проверить наличие и уведомить (продавцы)"),
     ])
 
 if __name__ == "__main__":

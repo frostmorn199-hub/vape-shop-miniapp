@@ -2,7 +2,7 @@ const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
-const BASE = window.location.origin;
+const BASE = "https://vape-shop-miniapp.onrender.com";
 
 const LOYALTY_LEVELS = [
   { threshold: 300_000, name: "Платина 💎", discount: 15 },
@@ -33,8 +33,10 @@ const FREE_DELIVERY_THRESHOLD = 2000;
 let products   = [];
 let cart       = JSON.parse(localStorage.getItem("vape_cart") || "{}");
 let cardQty    = {};
-let currentCat  = "all";
+let currentCat   = "all";
 let currentBrand = null;
+let currentSearch = "";
+let currentSort   = null;  // null | "asc" | "desc"
 let loyalty    = {
   total: 0, level: null, discount: 0, next_threshold: 20_000,
   vaypecoins: 0, ref_code: "", ref_count: 0,
@@ -310,14 +312,30 @@ function shareRefCode() {
 function normalizePhotoUrl(url) {
   if (!url) return "";
   const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return `https://drive.google.com/uc?export=view&id=${m[1]}`;
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w500-h500`;
   const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2 && url.includes("drive.google.com")) return `https://drive.google.com/uc?export=view&id=${m2[1]}`;
+  if (m2 && url.includes("drive.google.com")) return `https://drive.google.com/thumbnail?id=${m2[1]}&sz=w500-h500`;
   return url;
 }
 
 
 // ── PRODUCTS ──────────────────────────────────────────────────
+
+function onSearchInput(val) {
+  currentSearch = val.trim().toLowerCase();
+  renderProducts();
+}
+
+function toggleSort() {
+  if (!currentSort || currentSort === "desc") currentSort = "asc";
+  else currentSort = "desc";
+  const btn = document.getElementById("sort-btn");
+  if (btn) {
+    btn.textContent = currentSort === "asc" ? "↑₽" : "↓₽";
+    btn.classList.toggle("sort-active", true);
+  }
+  renderProducts();
+}
 
 function renderProducts() {
   buildBrandBar(currentCat);
@@ -327,6 +345,18 @@ function renderProducts() {
     ? products
     : products.filter(p => p["Категория"] === currentCat);
   if (currentBrand) list = list.filter(p => p["Бренд"] === currentBrand);
+
+  // Поиск
+  if (currentSearch) {
+    list = list.filter(p =>
+      (p["Название"] || "").toLowerCase().includes(currentSearch) ||
+      (p["Бренд"] || "").toLowerCase().includes(currentSearch)
+    );
+  }
+
+  // Сортировка по цене
+  if (currentSort === "asc")  list = [...list].sort((a, b) => a["Цена (₽)"] - b["Цена (₽)"]);
+  if (currentSort === "desc") list = [...list].sort((a, b) => b["Цена (₽)"] - a["Цена (₽)"]);
 
   if (!list.length) {
     grid.innerHTML = '<div class="placeholder">Товаров нет 🤷</div>';
@@ -339,7 +369,7 @@ function renderProducts() {
     const qty   = Math.min(cardQty[id] || 1, stock);
     const photo = normalizePhotoUrl(p["Фото"] || "");
     const imgHtml = photo
-      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.parentElement.style.display='none'"></div>`
+      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23888%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2212%22>нет фото</text></svg>'"></div>`
       : "";
     const isVC = p["Категория"] === "Товары VC";
     return `
@@ -580,10 +610,118 @@ function submitOrder() {
     category: p["Категория"],
   }));
 
+  // Сохраняем в историю заказов
+  const disc    = loyalty.discount || 0;
+  let rawTotal  = 0;
+  inCart.forEach(p => { rawTotal += p["Цена (₽)"] * (cart[p["ID"]] || 0); });
+  const discSum   = Math.round(rawTotal * disc / 100);
+  const itemsTotal = rawTotal - discSum;
+  const delivFee  = delivery === "courier" && itemsTotal < FREE_DELIVERY_THRESHOLD ? DELIVERY_FEE : 0;
+  const finalTotal = itemsTotal + delivFee;
+  const histEntry = {
+    date: new Date().toLocaleString("ru"),
+    contact, delivery, address, pay: pay === "card" ? "Карта" : pay === "cash" ? "Наличные" : "VCoin",
+    items: items.map(i => `${i.name} × ${i.qty}`).join(", "),
+    total: finalTotal,
+    discountPct: disc,
+  };
+  const hist = JSON.parse(localStorage.getItem("vape_orders") || "[]");
+  hist.unshift(histEntry);
+  if (hist.length > 50) hist.length = 50;
+  localStorage.setItem("vape_orders", JSON.stringify(hist));
+
+  // Обновляем достижения
+  updateAchievements(finalTotal);
+
   cart = {};
   saveCart();
 
   tg.sendData(JSON.stringify({ contact, delivery, address, pay, items, comment, vcoin_total: vct }));
+}
+
+
+// ── ИСТОРИЯ ЗАКАЗОВ ──────────────────────────────────────────
+
+function renderHistory() {
+  const el = document.getElementById("history-list");
+  if (!el) return;
+  const hist = JSON.parse(localStorage.getItem("vape_orders") || "[]");
+  if (!hist.length) {
+    el.innerHTML = '<div class="placeholder">История пуста 📭<br><small style="color:var(--hint)">Оформи первый заказ!</small></div>';
+    return;
+  }
+  el.innerHTML = hist.map((h, i) => `
+    <div class="history-card">
+      <div class="hc-header">
+        <span class="hc-num">#${hist.length - i}</span>
+        <span class="hc-date">${h.date}</span>
+      </div>
+      <div class="hc-items">${h.items}</div>
+      <div class="hc-footer">
+        <span class="hc-type">${h.delivery === "courier" ? "🚚 Доставка" : "🚶 Самовывоз"}</span>
+        <span class="hc-pay">${h.pay}</span>
+        <span class="hc-total">${(h.total || 0).toLocaleString("ru")}₽</span>
+      </div>
+      ${h.discountPct > 0 ? `<div class="hc-disc">🎁 Скидка ${h.discountPct}% применена</div>` : ""}
+    </div>`).join("");
+}
+
+
+// ── ДОСТИЖЕНИЯ ────────────────────────────────────────────────
+
+const ACHIEVEMENTS = [
+  { id: "first_order",  label: "Первый заказ",  emoji: "🛒", desc: "Оформи первый заказ",           check: s => s.orders >= 1 },
+  { id: "five_orders",  label: "Постоянный",     emoji: "🏆", desc: "5 заказов оформлено",           check: s => s.orders >= 5 },
+  { id: "big_spender",  label: "Щедрый",         emoji: "💰", desc: "Потрачено 5 000₽ всего",        check: s => s.spent >= 5000 },
+  { id: "whale",        label: "Кит",            emoji: "🐋", desc: "Потрачено 20 000₽ всего",       check: s => s.spent >= 20000 },
+  { id: "gamer",        label: "Геймер",         emoji: "🎮", desc: "Сыграл в VapeRun",              check: s => s.gamesPlayed >= 1 },
+  { id: "highscore",    label: "Рекордсмен",     emoji: "🥇", desc: "Рекорд 500+ в VapeRun",        check: s => s.bestScore >= 500 },
+  { id: "coin_hunter",  label: "Коллекционер",   emoji: "🌀", desc: "Собрал 100 монет в игре",       check: s => s.totalCoins >= 100 },
+  { id: "referral",     label: "Друг",           emoji: "🤝", desc: "Привёл друга по реф. коду",     check: s => s.refCount >= 1 },
+];
+
+function getAchievementStats() {
+  const hist  = JSON.parse(localStorage.getItem("vape_orders") || "[]");
+  const spent = hist.reduce((a, h) => a + (h.total || 0), 0);
+  const bestScore   = parseInt(localStorage.getItem("vr_best") || "0");
+  const totalCoins  = parseInt(localStorage.getItem("vr_coins") || "0");
+  const gamesPlayed = totalCoins > 0 || bestScore > 0 ? 1 : 0;
+  const refCount    = loyalty.ref_count || 0;
+  return { orders: hist.length, spent, bestScore, totalCoins, gamesPlayed, refCount };
+}
+
+function updateAchievements(newOrderTotal) {
+  // Called after order submit — trigger re-check
+  renderAchievements();
+}
+
+function renderAchievements() {
+  const el = document.getElementById("achievements-grid");
+  if (!el) return;
+  const stats   = getAchievementStats();
+  const unlocked = JSON.parse(localStorage.getItem("vape_ach") || "[]");
+  const newUnlocked = [...unlocked];
+
+  ACHIEVEMENTS.forEach(a => {
+    if (!unlocked.includes(a.id) && a.check(stats)) {
+      newUnlocked.push(a.id);
+    }
+  });
+  if (newUnlocked.length > unlocked.length) {
+    localStorage.setItem("vape_ach", JSON.stringify(newUnlocked));
+  }
+
+  el.innerHTML = ACHIEVEMENTS.map(a => {
+    const done = newUnlocked.includes(a.id);
+    return `<div class="ach-item ${done ? "ach-done" : "ach-locked"}">
+      <span class="ach-emoji">${a.emoji}</span>
+      <div class="ach-info">
+        <span class="ach-label">${a.label}</span>
+        <span class="ach-desc">${a.desc}</span>
+      </div>
+      <span class="ach-check">${done ? "✅" : "🔒"}</span>
+    </div>`;
+  }).join("");
 }
 
 
@@ -599,6 +737,10 @@ function showScreen(name, navBtn) {
   const tabsBar = document.getElementById("tabs-bar");
   if (tabsBar) tabsBar.classList.toggle("hidden", name !== "catalog");
 
+  // Строка поиска только в каталоге
+  const searchWrap = document.getElementById("search-bar-wrap");
+  if (searchWrap) searchWrap.classList.toggle("hidden", name !== "catalog");
+
   // Обновляем nav кнопки
   if (navBtn) {
     document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
@@ -607,10 +749,11 @@ function showScreen(name, navBtn) {
 
   if (name === "cart")     renderCart();
   if (name === "checkout") { renderOrderSummary(); updateCheckoutVC(); }
-  if (name === "loyalty")  buildLoyaltyScreen();
+  if (name === "loyalty")  { buildLoyaltyScreen(); renderAchievements(); }
+  if (name === "history")  renderHistory();
 
   // Управление главной кнопкой TG
-  if (name === "catalog" || name === "loyalty") {
+  if (name === "catalog" || name === "loyalty" || name === "history") {
     tg.MainButton.hide();
   } else if (name === "cart") {
     tg.MainButton.setText("Оформить заказ");

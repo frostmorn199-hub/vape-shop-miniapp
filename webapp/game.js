@@ -84,7 +84,7 @@ const saveTotalCoins = n  => localStorage.setItem('vr_coins', getTotalCoins() + 
 // ════════════════════════════════════════════════════════
 let _aCtx = null, _musicGain = null, _musicActive = false;
 let _nextBeat = 0, _beatNum = 0;
-const TEMPO = 60 / 128; // ~0.469 сек/удар (128 BPM)
+const TEMPO = 60 / 160; // ~0.375 сек/удар (160 BPM)
 
 function _getACtx() {
   if (!_aCtx) {
@@ -141,31 +141,31 @@ function playCrashSound() {
 function _kick(t) {
   const ac = _aCtx, o = ac.createOscillator(), g = ac.createGain();
   o.type = 'sine';
-  o.frequency.setValueAtTime(165, t); o.frequency.exponentialRampToValueAtTime(32, t + 0.18);
-  g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-  o.connect(g); g.connect(_musicGain); o.start(t); o.stop(t + 0.22);
+  o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(35, t + 0.15);
+  g.gain.setValueAtTime(1.0, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+  o.connect(g); g.connect(_musicGain); o.start(t); o.stop(t + 0.20);
 }
 
 function _snare(t) {
-  const ac = _aCtx, dur = 0.14;
+  const ac = _aCtx, dur = 0.12;
   const buf = ac.createBuffer(1, Math.floor(ac.sampleRate * dur), ac.sampleRate);
   const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/d.length, 1.3);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/d.length, 1.1);
   const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
-  f.type = 'bandpass'; f.frequency.value = 3000; f.Q.value = 0.6;
-  g.gain.setValueAtTime(0.45, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  f.type = 'bandpass'; f.frequency.value = 3500; f.Q.value = 0.7;
+  g.gain.setValueAtTime(0.55, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
   src.buffer = buf; src.connect(f); f.connect(g); g.connect(_musicGain);
   src.start(t); src.stop(t + dur);
 }
 
 function _hihat(t, open) {
-  const ac = _aCtx, dur = open ? 0.18 : 0.05;
+  const ac = _aCtx, dur = open ? 0.14 : 0.038;
   const buf = ac.createBuffer(1, Math.floor(ac.sampleRate * dur), ac.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random()*2-1;
   const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
-  f.type = 'highpass'; f.frequency.value = 8500;
-  g.gain.setValueAtTime(open ? 0.13 : 0.09, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  f.type = 'highpass'; f.frequency.value = 9000;
+  g.gain.setValueAtTime(open ? 0.16 : 0.11, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
   src.buffer = buf; src.connect(f); f.connect(g); g.connect(_musicGain);
   src.start(t); src.stop(t + dur);
 }
@@ -173,26 +173,42 @@ function _hihat(t, open) {
 function _bassNote(t, freq) {
   const ac = _aCtx, o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
   o.type = 'sawtooth'; o.frequency.value = freq;
-  f.type = 'lowpass'; f.frequency.value = 380; f.Q.value = 2.5;
-  g.gain.setValueAtTime(0.38, t); g.gain.exponentialRampToValueAtTime(0.001, t + TEMPO * 0.70);
+  f.type = 'lowpass'; f.frequency.value = 420; f.Q.value = 3.0;
+  g.gain.setValueAtTime(0.42, t); g.gain.exponentialRampToValueAtTime(0.001, t + TEMPO * 0.62);
   o.connect(f); f.connect(g); g.connect(_musicGain);
-  o.start(t); o.stop(t + TEMPO * 0.70);
+  o.start(t); o.stop(t + TEMPO * 0.62);
 }
 
-const _BASSLINE = [55, 55, 55, 55, 82.4, 55, 73.4, 82.4];
+function _leadNote(t, freq) {
+  const ac = _aCtx, o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+  o.type = 'square'; o.frequency.value = freq;
+  f.type = 'lowpass'; f.frequency.value = 2400; f.Q.value = 1.5;
+  g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + TEMPO * 0.45);
+  o.connect(f); f.connect(g); g.connect(_musicGain);
+  o.start(t); o.stop(t + TEMPO * 0.45);
+}
+
+// 160 BPM energetic: bassline in A minor feel
+const _BASSLINE = [55, 55, 82.4, 55, 73.4, 55, 82.4, 65.4];
+// Lead arp: A3-C4-E4-A4 pattern
+const _LEADLINE = [220, 261.6, 329.6, 440, 329.6, 261.6, 220, 196];
 
 function _scheduleBeats() {
   if (!_musicActive || !_aCtx) return;
   while (_nextBeat < _aCtx.currentTime + 0.5) {
     const b = _beatNum % 8;
-    if (b === 0 || b === 4) _kick(_nextBeat);
+    // Kick on every beat (0,2,4,6) + extra on 1 for driving 4/4
+    if (b % 2 === 0) _kick(_nextBeat);
+    // Snare on 2 and 6 (half time feel at 160 = snappy)
     if (b === 2 || b === 6) _snare(_nextBeat);
-    _hihat(_nextBeat, b === 3 || b === 7);
+    // Every 16th hihat
+    _hihat(_nextBeat, b === 0 || b === 4);
     _bassNote(_nextBeat, _BASSLINE[b]);
+    _leadNote(_nextBeat, _LEADLINE[b]);
     _nextBeat += TEMPO;
     _beatNum++;
   }
-  setTimeout(_scheduleBeats, 100);
+  setTimeout(_scheduleBeats, 80);
 }
 
 function startMusic() {
@@ -424,6 +440,8 @@ let score, speed, playerLane, targetLane, playerX;
 let obstacles, rings, particles, roadOffset, frameCount;
 let coins;
 let lamps;           // фонарные столбы
+let powerups;        // бонусы (щит, магнит)
+let shieldActive, shieldTimer, magnetActive, magnetTimer;
 let animFrame, gameActive;
 let _asphaltPat = null; // кэш текстуры асфальта
 
@@ -433,11 +451,13 @@ function startGame() {
   ctx    = canvas.getContext('2d');
   setupDims();
 
-  score      = 0; speed = 3.0;
+  score      = 0; speed = 4.5;
   playerLane = 1; targetLane = 1;
   playerX    = LANE_BOT[1];
-  obstacles  = []; rings = []; particles = []; lamps = [];
+  obstacles  = []; rings = []; particles = []; lamps = []; powerups = [];
   coins      = 0;
+  shieldActive = false; shieldTimer = 0;
+  magnetActive = false; magnetTimer = 0;
   roadOffset = 0; frameCount = 0;
   gameActive = true;
   _asphaltPat = null; // пересоздаём текстуру под новые размеры
@@ -477,31 +497,46 @@ function loop() {
   score++;
   document.getElementById('hud-score').textContent = score;
 
-  if (frameCount % 400 === 0) speed = Math.min(speed + 0.35, 14);
+  if (frameCount % 260 === 0) speed = Math.min(speed + 0.50, 18);
 
   playerX += (LANE_BOT[targetLane] - playerX) * 0.17;
 
   // Спавн препятствий
-  const rate = Math.max(50, 160 - Math.floor(speed * 9));
+  const rate = Math.max(32, 130 - Math.floor(speed * 8));
   if (frameCount % rate === 0) {
     const lane = Math.floor(Math.random() * LANES);
     const recent = obstacles.filter(o => o.lane === lane && o.y < VPY + H * 0.3);
     if (recent.length === 0) obstacles.push({ lane, y: VPY + 10 });
   }
 
+  // Иногда 2 препятствия сразу на разных полосах (после скорости 8)
+  if (speed > 8 && frameCount % 200 === 100) {
+    const l1 = Math.floor(Math.random() * LANES);
+    const l2 = (l1 + 1 + Math.floor(Math.random() * 2)) % LANES;
+    obstacles.push({ lane: l1, y: VPY + 10 });
+    obstacles.push({ lane: l2, y: VPY + 10 });
+  }
+
+  // Спавн power-up (щит или магнит) каждые ~480 кадров
+  if (frameCount % 480 === 240) {
+    const lane = Math.floor(Math.random() * LANES);
+    const type = Math.random() < 0.5 ? 'shield' : 'magnet';
+    powerups.push({ lane, y: VPY + 10, type });
+  }
+
   // Спавн колечек
-  const ringRate = Math.max(55, 110 - Math.floor(speed * 4));
+  const ringRate = Math.max(42, 90 - Math.floor(speed * 3.5));
   if (frameCount % ringRate === 0) {
     const lane = Math.floor(Math.random() * LANES);
     const blocked = obstacles.some(o => o.lane === lane && o.y < VPY + H * 0.5 && o.y > VPY + 5);
     if (!blocked) {
-      const count = Math.random() < 0.35 ? 3 : 1;
+      const count = Math.random() < 0.40 ? 3 : 1;
       for (let k = 0; k < count; k++) rings.push({ lane, y: VPY + 10 + k * 40 });
     }
   }
 
-  // Спавн фонарей — каждые ~130 кадров
-  if (frameCount % 130 === 0) lamps.push({ y: VPY + 8 });
+  // Спавн фонарей — каждые ~110 кадров (чаще = оживлённее)
+  if (frameCount % 110 === 0) lamps.push({ y: VPY + 8 });
 
   // Движение объектов
   obstacles.forEach(o => { const s = scaleAtY(o.y); o.y += speed * (0.8 + s * 2.2); });
@@ -513,12 +548,32 @@ function loop() {
   lamps.forEach(l => { const s = scaleAtY(l.y); l.y += speed * (0.8 + s * 2.2); });
   lamps = lamps.filter(l => l.y < H + 200);
 
-  // Сбор колечек
+  powerups.forEach(p => { const s = scaleAtY(p.y); p.y += speed * (0.8 + s * 2.2); });
+  powerups = powerups.filter(p => p.y < H + 60);
+
+  // Таймеры бонусов
+  if (shieldActive) { shieldTimer--; if (shieldTimer <= 0) shieldActive = false; }
+  if (magnetActive) { magnetTimer--; if (magnetTimer <= 0) magnetActive = false; }
+
+  // Сбор колечек (магнит расширяет зону и тянет к игроку)
   for (let i = rings.length - 1; i >= 0; i--) {
     const r = rings[i];
+    const rx = laneXatY(r.lane, r.y);
+    // Магнит: притягиваем все кольца в любой полосе если близко
+    if (magnetActive && r.y > GROUND_Y - 160 && r.y < GROUND_Y + 60) {
+      const dist = Math.abs(rx - playerX);
+      if (dist < W * 0.45) {
+        rings.splice(i, 1);
+        coins++;
+        document.getElementById('hud-coins').textContent = '🌀 ' + coins;
+        tg.HapticFeedback?.impactOccurred('light');
+        playCollectSound();
+        sparkleRing(rx, r.y - 40 * scaleAtY(r.y));
+        continue;
+      }
+    }
     if (r.lane !== targetLane) continue;
     if (r.y > GROUND_Y - 70 && r.y < GROUND_Y + 30) {
-      const rx = laneXatY(r.lane, r.y);
       if (Math.abs(rx - playerX) < W * 0.14) {
         rings.splice(i, 1);
         coins++;
@@ -530,17 +585,43 @@ function loop() {
     }
   }
 
+  // Сбор power-up
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const pu = powerups[i];
+    if (pu.lane !== targetLane) continue;
+    if (pu.y > GROUND_Y - 70 && pu.y < GROUND_Y + 30) {
+      const px = laneXatY(pu.lane, pu.y);
+      if (Math.abs(px - playerX) < W * 0.14) {
+        powerups.splice(i, 1);
+        if (pu.type === 'shield') { shieldActive = true; shieldTimer = 300; }
+        else                      { magnetActive = true; magnetTimer = 360; }
+        tg.HapticFeedback?.impactOccurred('medium');
+        playCollectSound();
+        sparkleRing(px, pu.y - 40 * scaleAtY(pu.y));
+      }
+    }
+  }
+
   // Частицы
   particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.18; p.life--; });
   particles = particles.filter(p => p.life > 0);
 
   // Столкновения
-  for (const o of obstacles) {
+  for (let oi = obstacles.length - 1; oi >= 0; oi--) {
+    const o = obstacles[oi];
     if (o.lane !== targetLane) continue;
     const oy = o.y;
     if (oy > GROUND_Y - 40 && oy < GROUND_Y + 70) {
       const ox = laneXatY(o.lane, oy);
       if (Math.abs(ox - playerX) < W * 0.12) {
+        if (shieldActive) {
+          // Щит поглощает удар
+          shieldActive = false; shieldTimer = 0;
+          obstacles.splice(oi, 1);
+          sparkleRing(ox, oy);
+          tg.HapticFeedback?.notificationOccurred('warning');
+          break;
+        }
         explode(playerX, GROUND_Y);
         gameActive = false;
         tg.HapticFeedback?.notificationOccurred('error');
@@ -563,9 +644,11 @@ function render() {
   drawRoad();
   drawLamps();
   [...rings].sort((a,b) => a.y - b.y).forEach(drawRing);
+  [...powerups].sort((a,b) => a.y - b.y).forEach(drawPowerup);
   [...obstacles].sort((a,b) => a.y - b.y).forEach(drawBattery);
   drawParticles();
   if (gameActive) drawPlayer();
+  drawHudEffects();
 }
 
 // ── Небо и горизонт ─────────────────────────────────────
@@ -892,10 +975,67 @@ function drawLamps() {
   });
 }
 
+// ── Power-up ─────────────────────────────────────────────
+function drawPowerup(pu) {
+  const sc = scaleAtY(pu.y);
+  const px = laneXatY(pu.lane, pu.y);
+  const ry = pu.y - 58 * sc;
+  const r  = W * 0.032 * sc;
+  const pulse = 0.85 + Math.sin(frameCount * 0.14 + pu.y * 0.05) * 0.15;
+
+  ctx.save(); ctx.translate(px, ry); ctx.scale(pulse, pulse);
+
+  const col = pu.type === 'shield' ? '#00e5ff' : '#ff9100';
+  ctx.shadowColor = col; ctx.shadowBlur = 14 * sc;
+
+  // Hexagon for power-up
+  ctx.beginPath();
+  for (let a = 0; a < 6; a++) {
+    const ang = (a * Math.PI / 3) - Math.PI / 6;
+    const mx = Math.cos(ang) * r, my = Math.sin(ang) * r;
+    a === 0 ? ctx.moveTo(mx, my) : ctx.lineTo(mx, my);
+  }
+  ctx.closePath();
+  ctx.fillStyle = col + '33';
+  ctx.fill();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = r * 0.18;
+  ctx.stroke();
+
+  ctx.font = `${r * 1.3}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = col;
+  ctx.fillText(pu.type === 'shield' ? '🛡' : '🧲', 0, 0);
+
+  ctx.shadowBlur = 0; ctx.restore();
+}
+
+// ── HUD-эффекты (щит/магнит) ─────────────────────────────
+function drawHudEffects() {
+  if (shieldActive) {
+    const alpha = 0.18 + Math.sin(frameCount * 0.12) * 0.06;
+    ctx.strokeStyle = `rgba(0,229,255,${alpha + 0.35})`;
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, W - 6, H - 6);
+
+    const px2 = playerX, py2 = GROUND_Y;
+    const sr = Math.min(W * 0.15, 68) * 1.4;
+    const sg = ctx.createRadialGradient(px2, py2 - sr * 0.8, sr * 0.3, px2, py2 - sr * 0.8, sr * 1.2);
+    sg.addColorStop(0,   `rgba(0,229,255,${alpha * 1.5})`);
+    sg.addColorStop(1,   'transparent');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(px2, py2 - sr * 0.8, sr * 1.2, 0, Math.PI * 2); ctx.fill();
+  }
+  if (magnetActive) {
+    ctx.fillStyle = `rgba(255,145,0,${0.10 + Math.sin(frameCount * 0.16) * 0.04})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
 // ── Персонаж ─────────────────────────────────────────────
 function drawPlayer() {
   const x   = playerX, y = GROUND_Y;
-  const pw  = Math.min(W * 0.22, 100);
+  const pw  = Math.min(W * 0.15, 68);
   const ph  = pw * 2.0;
   const bob = Math.sin(frameCount * 0.16) * 4 + Math.sin(frameCount * 0.3) * 1.5;
   const tilt = (LANE_BOT[targetLane] - playerX) / (W * 0.35) * 0.10;

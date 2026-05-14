@@ -60,11 +60,13 @@ clients_ws   = None
 referrals_ws = None
 promos_ws    = None
 orders_ws    = None
-_sheets_ready = False
+
+# НЕ подключаемся при импорте — gunicorn делает fork() и фоновые потоки теряются.
+# Подключение происходит при первом вызове _gs_call().
 
 def _connect_sheets():
     """Подключиться/переподключиться к Google Sheets. Не бросает исключений."""
-    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws, _sheets_ready
+    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws
     try:
         client      = gspread.authorize(creds)
         spreadsheet = client.open("VAPE SHOP")
@@ -80,32 +82,19 @@ def _connect_sheets():
                 promos_ws = spreadsheet.add_worksheet("Промокоды_колесо", rows=1000, cols=6)
                 promos_ws.append_row(["Код", "Тип", "Скидка", "UID", "Использован", "Дата"])
             except Exception: promos_ws = None
-        _sheets_ready = True
         logging.info("gspread connected OK")
     except Exception as e:
-        _sheets_ready = False
         logging.error(f"gspread connect failed: {e}")
 
-# Запускаем подключение в фоновом потоке — сервер стартует мгновенно
-import threading
-threading.Thread(target=_connect_sheets, daemon=True).start()
-
 def _gs_call(fn, *args, **kwargs):
-    """Вызывает fn(*args, **kwargs).
-    - Если sheets ещё не готовы — ждёт подключения (до 15 сек).
+    """Ленивое подключение + вызов fn.
+    - Если sheets не инициализированы — подключается сейчас (первый вызов).
     - При 401/auth-ошибке — переподключается и повторяет.
     - При 429 — exponential backoff (до 3 попыток).
     """
-    global _sheets_ready
-    if not _sheets_ready:
-        for _ in range(15):
-            time.sleep(1)
-            if _sheets_ready:
-                break
-        if not _sheets_ready:
-            _connect_sheets()
+    if products_ws is None:
+        _connect_sheets()
     max_retries = 3
-    delay = 5
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)
@@ -116,7 +105,7 @@ def _gs_call(fn, *args, **kwargs):
                 return fn(*args, **kwargs)
             if "429" in err or "quota" in err or "rate" in err:
                 if attempt < max_retries - 1:
-                    wait = delay * (2 ** attempt)
+                    wait = 5 * (2 ** attempt)
                     logging.warning(f"gspread 429, retry {attempt+1} after {wait}s")
                     time.sleep(wait)
                     continue

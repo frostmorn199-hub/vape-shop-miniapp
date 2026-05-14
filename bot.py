@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 API_TOKEN  = os.getenv("API_TOKEN")
 ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
 SERVER_URL = os.getenv("SERVER_URL", "https://vape-shop-miniapp.onrender.com")
-SELLER_IDS = [8784410820, 525971484, 5710542507]
+SELLER_IDS = [int(x) for x in os.getenv("SELLER_IDS", "8784410820,525971484,5710542507").split(",") if x.strip()]
 PICKUP_ADDRESS = "Кривошеина 13/2"
 WEBAPP_URL = "https://frostmorn199-hub.github.io/vape-shop-miniapp"
 MIN_REFERRAL_PURCHASE = 950
@@ -499,11 +499,20 @@ def clear_user_wheel_discount(uid: int):
 
 def save_order(order_id: str, uid: int, contact: str, raw_total: int, final_total: int,
                delivery: str, address: str, pay: str, summary: str, items_json: str = ""):
+    if orders_ws is None:
+        logging.error("save_order: orders_ws is None, order not saved!")
+        return
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if pay == "card":
+        pay_label = "Перевод"
+    elif pay == "vcoin":
+        pay_label = "VCoin 🪙"
+    else:
+        pay_label = "Наличные"
     orders_ws.append_row([
         order_id, uid, contact, now, raw_total, final_total,
         "Доставка" if delivery == "courier" else "Самовывоз",
-        address, "Перевод" if pay == "card" else "Наличные",
+        address, pay_label,
         "pending", summary, items_json
     ])
 
@@ -1640,33 +1649,43 @@ async def web_app_order(msg: types.Message):
         wheel_discount = await _run(get_user_wheel_discount, uid)
         total_discount = discount + wheel_discount
 
-        now         = datetime.now().strftime("%Y-%m-%d %H:%M")
-        raw_total   = sum(i["price"] * i["qty"] for i in items)
-        disc_sum    = int(raw_total * total_discount / 100)
-        items_total = raw_total - disc_sum
-        delivery_fee = DELIVERY_FEE if delivery == "courier" and items_total < FREE_DELIVERY_THRESHOLD else 0
-        final_total = items_total + delivery_fee
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        data_gs        = await _run(products_ws.get_all_records)
+        # Загружаем актуальные цены из Google Sheets (защита от подделки на клиенте)
+        data_gs   = await _run(products_ws.get_all_records)
+        gs_lookup  = {row["ID"]: row       for row in data_gs}
+        gs_row_idx = {row["ID"]: idx + 2   for idx, row in enumerate(data_gs)}  # sheet row number
+
+        raw_total    = 0
         order_lines    = []
         items_for_json = []
 
         for it in items:
-            summ = it["price"] * it["qty"]
-            brand_str = ""
-            puffs_str = ""
-            for idx, row in enumerate(data_gs):
-                if row["ID"] == it["id"]:
-                    brand_str = row.get("Бренд", "")
-                    puffs_val = row.get("Затяжки", "")
-                    if puffs_val:
-                        puffs_str = f" {puffs_val}"
-                    await _run(products_ws.update_cell, idx + 2, 7, max(0, row["Остаток"] - it["qty"]))
-                    break
+            row = gs_lookup.get(it["id"])
+            if not row:
+                logging.warning(f"web_app_order: unknown product id={it['id']}, skipping")
+                continue
+            price    = int(row.get("Цена (₽)", 0) or 0)
+            qty      = int(it["qty"])
+            summ     = price * qty
+            raw_total += summ
+
+            brand_str = row.get("Бренд", "")
+            puffs_val = row.get("Затяжки", "")
+            puffs_str = f" {puffs_val}" if puffs_val else ""
+
+            sheet_row = gs_row_idx[it["id"]]
+            await _run(products_ws.update_cell, sheet_row, 7, max(0, row["Остаток"] - qty))
+
             order_lines.append(
-                f"{brand_str}{puffs_str} {it['name']} х{it['qty']} = {summ:,}₽"
+                f"{brand_str}{puffs_str} {it['name']} х{qty} = {summ:,}₽"
             )
-            items_for_json.append({"id": it["id"], "qty": it["qty"]})
+            items_for_json.append({"id": it["id"], "qty": qty})
+
+        disc_sum    = int(raw_total * total_discount / 100)
+        items_total = raw_total - disc_sum
+        delivery_fee = DELIVERY_FEE if delivery == "courier" and items_total < FREE_DELIVERY_THRESHOLD else 0
+        final_total = items_total + delivery_fee
 
         summary = "\n".join(order_lines)
 

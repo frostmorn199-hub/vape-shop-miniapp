@@ -96,6 +96,7 @@ async function init() {
   renderProducts();
   updateFab();
   buildLoyaltyScreen();
+  updateLoyaltyBadge();
 }
 
 async function retryLoadProducts() {
@@ -499,6 +500,15 @@ function addToCart(id) {
   updateFab();
   tg.HapticFeedback?.impactOccurred("light");
 
+  // Анимация иконки корзины в навигации
+  const cartNavBtn = document.querySelector('.nav-btn[data-screen="cart"]');
+  if (cartNavBtn) {
+    cartNavBtn.classList.remove("cart-bounce");
+    void cartNavBtn.offsetWidth; // reflow для перезапуска анимации
+    cartNavBtn.classList.add("cart-bounce");
+    setTimeout(() => cartNavBtn.classList.remove("cart-bounce"), 400);
+  }
+
   const btn = document.getElementById(`addbtn-${id}`);
   if (btn) {
     btn.textContent = "✓ Добавлено";
@@ -534,6 +544,24 @@ function updateFab() {
   if (priceEl) {
     priceEl.textContent = count > 0 ? `${price.toLocaleString("ru")}₽` : "";
     priceEl.classList.toggle("hidden", count === 0);
+  }
+}
+
+function updateLoyaltyBadge() {
+  const btn = document.querySelector('.nav-btn[data-screen="loyalty"]');
+  if (!btn) return;
+  // Показываем точку если есть VCoin или реферальный код
+  const hasCoins = (loyalty.vaypecoins || 0) > 0;
+  const hasCode  = !!(loyalty.ref_code);
+  let dot = btn.querySelector(".nav-loyalty-dot");
+  if (hasCoins || hasCode) {
+    if (!dot) {
+      dot = document.createElement("span");
+      dot.className = "nav-loyalty-dot";
+      btn.appendChild(dot);
+    }
+  } else if (dot) {
+    dot.remove();
   }
 }
 

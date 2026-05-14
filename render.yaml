@@ -9,3 +9,7 @@ services:
     envVars:
       - key: GOOGLE_CREDS_JSON
         sync: false
+      - key: DEBUG_TOKEN
+        sync: false
+      - key: SERVER_URL
+        value: https://vape-shop-miniapp.onrender.com

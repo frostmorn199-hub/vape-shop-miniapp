@@ -85,15 +85,27 @@ def _reauth():
     logging.info("gspread re-auth done")
 
 def _gs_call(fn, *args, **kwargs):
-    """Вызывает fn(*args, **kwargs); при APIError/TransportError — переавторизует и повторяет."""
-    try:
-        return fn(*args, **kwargs)
-    except Exception as e:
-        err = str(e).lower()
-        if any(k in err for k in ("401", "invalid_grant", "token", "transport", "connection")):
-            _reauth()
+    """Вызывает fn(*args, **kwargs).
+    - При 401/auth-ошибке — переавторизует и повторяет один раз.
+    - При 429 (rate limit) — ждёт с экспоненциальным backoff (до 3 попыток).
+    """
+    max_retries = 3
+    delay = 5  # секунд
+    for attempt in range(max_retries):
+        try:
             return fn(*args, **kwargs)
-        raise
+        except Exception as e:
+            err = str(e).lower()
+            if any(k in err for k in ("401", "invalid_grant", "token", "transport", "connection")):
+                _reauth()
+                return fn(*args, **kwargs)
+            if "429" in err or "quota" in err or "rate" in err:
+                if attempt < max_retries - 1:
+                    wait = delay * (2 ** attempt)
+                    logging.warning(f"gspread 429 rate limit, retry {attempt+1}/{max_retries-1} after {wait}s")
+                    time.sleep(wait)
+                    continue
+            raise
 
 try:
     referrals_ws = spreadsheet.worksheet("Рефералы")

@@ -531,3 +531,34 @@ body {
   70%  { transform: scale(1.1); }
   100% { transform: scale(1);   opacity: 1; }
 }
+
+/* ── Loyalty nav badge dot ───────────────────── */
+.nav-btn {
+  position: relative;
+}
+.nav-loyalty-dot {
+  position: absolute;
+  top: 4px; right: 10px;
+  width: 8px; height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  border: 1.5px solid var(--bg2);
+  animation: loyDotPop .25s ease;
+}
+@keyframes loyDotPop {
+  from { transform: scale(0); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
+/* ── Cart nav bounce ─────────────────────────── */
+@keyframes cartBounce {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.35) translateY(-3px); }
+  60%  { transform: scale(0.9); }
+  80%  { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+.cart-bounce .nav-icon {
+  display: inline-block;
+  animation: cartBounce .4s ease;
+}

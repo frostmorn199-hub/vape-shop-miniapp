@@ -61,8 +61,9 @@ referrals_ws = None
 promos_ws    = None
 orders_ws    = None
 
-# НЕ подключаемся при импорте — gunicorn делает fork() и фоновые потоки теряются.
-# Подключение происходит при первом вызове _gs_call().
+# НЕ подключаемся при импорте — gunicorn делает fork(), соединение создаётся
+# лениво в before_request при первом HTTP-запросе.
+_last_connect_attempt = 0.0
 
 def _connect_sheets():
     """Подключиться/переподключиться к Google Sheets. Не бросает исключений."""
@@ -87,10 +88,10 @@ def _connect_sheets():
         logging.error(f"gspread connect failed: {e}")
 
 def _gs_call(fn, *args, **kwargs):
-    """Ленивое подключение + вызов fn.
-    - Если sheets не инициализированы — подключается сейчас (первый вызов).
+    """Вызов fn с автоповтором.
     - При 401/auth-ошибке — переподключается и повторяет.
     - При 429 — exponential backoff (до 3 попыток).
+    Подключение гарантируется before_request, но дублируем проверку для надёжности.
     """
     if products_ws is None:
         _connect_sheets()
@@ -136,6 +137,20 @@ def get_referral_level(count: int):
         if count >= threshold:
             return name, pct
     return None, 0
+
+
+@app.before_request
+def ensure_connected():
+    """Lazily connect to Google Sheets on first real request (after gunicorn fork).
+    Rate-limited to at most one reconnect attempt per 30 seconds to avoid
+    hammering the auth endpoint if credentials are invalid.
+    """
+    global _last_connect_attempt
+    if products_ws is None:
+        now = time.time()
+        if now - _last_connect_attempt > 30:
+            _last_connect_attempt = now
+            _connect_sheets()
 
 
 @app.route("/api/ping")

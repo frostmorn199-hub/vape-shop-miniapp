@@ -44,6 +44,7 @@ let loyalty    = {
   vaypecoins: 0, ref_code: "", ref_count: 0,
   ref_level: null, ref_pct: 0, next_ref_threshold: 1,
 };
+let _lastUid = null;
 
 
 // ── INIT ──────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ async function init() {
   fetch(`${BASE}/api/ping`).catch(() => {});
 
   const uid = tg.initDataUnsafe?.user?.id;
+  _lastUid = uid || null;
 
   // Загружаем loyalty, products и корзину с сервера параллельно
   const [loyaltyResult, productsResult, cartResult] = await Promise.allSettled([
@@ -269,6 +271,21 @@ function buildLoyaltyScreen() {
   // Вейпкоины
   document.getElementById("loy-coins").textContent = `${coins.toLocaleString("ru")} VC`;
 
+  // Debug UID + кнопка обновления
+  const coinsCard = document.querySelector(".coins-card");
+  if (coinsCard) {
+    let dbgEl = document.getElementById("loy-debug-uid");
+    if (!dbgEl) {
+      dbgEl = document.createElement("div");
+      dbgEl.id = "loy-debug-uid";
+      dbgEl.style.cssText = "font-size:11px;color:var(--hint);text-align:center;margin-top:4px;";
+      coinsCard.appendChild(dbgEl);
+    }
+    const uidNow = tg.initDataUnsafe?.user?.id;
+    dbgEl.innerHTML = `ID: ${uidNow || "<b style='color:#e74c3c'>не определён</b>"} &nbsp;` +
+      `<button id="loy-reload-btn" onclick="reloadLoyalty()" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);cursor:pointer;">🔄 Обновить</button>`;
+  }
+
   // Реферальный уровень
   const refLevelEl = document.getElementById("ref-level-name");
   if (loyalty.ref_level) {
@@ -369,6 +386,28 @@ function updateCheckoutVC() {
     const cardRadio = document.querySelector('input[name="pay"][value="card"]');
     if (cardRadio) cardRadio.checked = true;
   }
+}
+
+async function reloadLoyalty() {
+  const uid = tg.initDataUnsafe?.user?.id;
+  _lastUid = uid || null;
+  if (!uid) {
+    tg.showAlert("Не удалось определить Telegram ID. Открой приложение через кнопку в боте.");
+    buildLoyaltyScreen(); // redraw to refresh debug info
+    return;
+  }
+  const btn = document.getElementById("loy-reload-btn");
+  if (btn) { btn.textContent = "⏳ Загрузка..."; btn.disabled = true; }
+  try {
+    const data = await fetchJSON(`${BASE}/api/loyalty/${uid}`);
+    if (data) { loyalty = data; }
+  } catch(e) {
+    tg.showAlert("Ошибка загрузки. Попробуй снова.");
+  }
+  buildLoyaltyScreen();
+  updateLoyaltyBar();
+  updateCheckoutVC();
+  updateLoyaltyBadge();
 }
 
 function copyRefCode() {

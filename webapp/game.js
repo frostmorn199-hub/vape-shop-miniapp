@@ -57,13 +57,20 @@ async function registerPromoCode(code, type, discount) {
 
 async function addCoinsToBalance(smokeCount) {
   if (!TG_UID || smokeCount <= 0) return;
+  // Сохраняем в localStorage на случай если сервер недоступен
+  const pending = JSON.parse(localStorage.getItem("vr_pending_smoke") || "0");
+  const total   = pending + smokeCount;
+  localStorage.setItem("vr_pending_smoke", total);
   try {
-    await fetch(`${BASE_URL}/api/add-coins`, {
+    const resp = await fetch(`${BASE_URL}/api/add-coins`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid: TG_UID, smoke: smokeCount }),
+      body: JSON.stringify({ uid: TG_UID, smoke: total }),
     });
-  } catch (e) { console.warn("addCoinsToBalance failed", e); }
+    if (resp.ok) {
+      localStorage.removeItem("vr_pending_smoke"); // успешно — сбрасываем буфер
+    }
+  } catch (e) { console.warn("addCoinsToBalance failed, coins saved locally:", total, e); }
 }
 
 // ─── Сторадж ────────────────────────────────────────────

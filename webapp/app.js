@@ -98,6 +98,21 @@ async function init() {
   buildLoyaltyScreen();
   updateLoyaltyBadge();
 
+  // Отправляем накопленные дымки из игры (если сервер был недоступен)
+  const pendingSmoke = parseInt(localStorage.getItem("vr_pending_smoke") || "0");
+  if (pendingSmoke > 0 && uid) {
+    fetch(`${BASE}/api/add-coins`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid, smoke: pendingSmoke }),
+    }).then(r => {
+      if (r.ok) {
+        localStorage.removeItem("vr_pending_smoke");
+        console.log(`Pending ${pendingSmoke} smoke synced to server`);
+      }
+    }).catch(() => {});
+  }
+
   // Авто-заполняем контакт из Telegram-профиля
   const user = tg.initDataUnsafe?.user;
   if (user) {
@@ -953,14 +968,8 @@ function showScreen(name, navBtn) {
   if (name === "loyalty") { buildLoyaltyScreen(); renderAchievements(); }
   if (name === "history") renderHistory();
 
-  // Управление главной кнопкой TG
-  if (name === "catalog" || name === "loyalty" || name === "history" || name === "success") {
-    tg.MainButton.hide();
-  } else if (name === "cart") {
-    tg.MainButton.setText("Оформить заказ");
-    tg.MainButton.show();
-    tg.MainButton.onClick(() => showScreen("checkout", null));
-  }
+  // MainButton скрываем везде — форма оформления встроена в корзину
+  tg.MainButton.hide();
 }
 
 init();

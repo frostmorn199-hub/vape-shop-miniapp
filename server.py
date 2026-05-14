@@ -150,6 +150,19 @@ def ensure_connected():
             _connect_sheets()
 
 
+@app.route("/api/headers")
+def api_headers():
+    """Диагностика: заголовки таблицы Клиенты (защищено DEBUG_TOKEN)."""
+    token = request.args.get("token", "")
+    if not DEBUG_TOKEN or token != DEBUG_TOKEN:
+        return jsonify({"error": "unauthorized"}), 403
+    try:
+        h = _gs_call(clients_ws.row_values, 1)
+        return jsonify({"headers": h, "count": len(h)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/ping")
 def api_ping():
     """Keep-alive endpoint — вызывается клиентом при первой загрузке."""
@@ -224,10 +237,10 @@ def get_user_loyalty(uid: int):
             except (ValueError, TypeError):
                 continue
             if row_uid == uid:
-                sheet_row     = rec_idx + 2  # 1-indexed (+ header row)
-                total         = int(r.get("Итого", 0) or 0)
-                vaypecoins    = int(r.get("Вейпкоины", 0) or 0)
-                ref_code      = r.get("Промокод", "") or ""
+                sheet_row      = rec_idx + 2  # 1-indexed (+ header row)
+                total          = int(r.get("Итого", 0) or 0)
+                vaypecoins     = round(float(r.get("Вейпкоины", 0) or 0), 2)
+                ref_code       = str(r.get("Промокод", "") or "").strip()
                 wheel_discount = int(r.get("Промо_скидка", 0) or 0)
 
                 level_name, discount = get_loyalty(total)
@@ -250,29 +263,51 @@ def get_user_loyalty(uid: int):
                 sorted_ref = sorted(REFERRAL_LEVELS, key=lambda x: x[0])
                 next_ref_t = next((t for t, n, p in sorted_ref if ref_count < t), None)
 
-                # Fallback: читаем вейпкоины напрямую по индексу колонки (col 8 → index 7)
+                # Получаем заголовки для динамического поиска колонок
+                try:
+                    headers = _gs_call(clients_ws.row_values, 1)
+                except Exception:
+                    headers = []
+
+                # Fallback: читаем вейпкоины по имени колонки в заголовках
                 if vaypecoins == 0:
                     try:
                         row_vals = _gs_call(clients_ws.row_values, sheet_row)
-                        if len(row_vals) >= 8:
-                            vaypecoins = int(row_vals[7] or 0)
+                        vc_names = ["Вейпкоины", "вейпкоины", "VCoin", "vcoin", "VC"]
+                        for name in vc_names:
+                            if name in headers:
+                                idx = headers.index(name)
+                                if len(row_vals) > idx:
+                                    vaypecoins = round(float(row_vals[idx] or 0), 2)
+                                    break
                     except Exception:
                         pass
 
-                # Fallback: читаем промокод напрямую по индексу колонки (col 6 → index 5)
+                # Fallback: читаем промокод по имени колонки в заголовках
                 if not ref_code:
                     try:
                         row_vals = _gs_call(clients_ws.row_values, sheet_row)
-                        if len(row_vals) >= 6:
-                            candidate = str(row_vals[5] or "").strip()
-                            if len(candidate) >= 4 and candidate.replace("-", "").isalnum():
-                                ref_code = candidate
+                        promo_names = ["Промокод", "промокод", "Promo", "promo"]
+                        for name in promo_names:
+                            if name in headers:
+                                idx = headers.index(name)
+                                if len(row_vals) > idx:
+                                    candidate = str(row_vals[idx] or "").strip()
+                                    if len(candidate) >= 4 and candidate.replace("-", "").isalnum():
+                                        ref_code = candidate
+                                        break
                     except Exception:
                         pass
 
                 # Автогенерация промокода если у пользователя его нет
                 if not ref_code:
                     try:
+                        promo_col = 6  # default
+                        promo_names = ["Промокод", "промокод", "Promo"]
+                        for name in promo_names:
+                            if name in headers:
+                                promo_col = headers.index(name) + 1  # 1-indexed
+                                break
                         existing_codes = {
                             str(rr.get("Промокод", "") or "").upper()
                             for rr in records
@@ -284,10 +319,10 @@ def get_user_loyalty(uid: int):
                             )
                             if new_code.upper() not in existing_codes:
                                 break
-                        _gs_call(clients_ws.update_cell, sheet_row, 6, new_code)
+                        _gs_call(clients_ws.update_cell, sheet_row, promo_col, new_code)
                         ref_code = new_code
                         _cache_del(cache_key)
-                        logging.info(f"Auto-generated promo code {new_code} for uid {uid}")
+                        logging.info(f"Auto-generated promo code {new_code} col={promo_col} uid={uid}")
                     except Exception as e:
                         logging.warning(f"promo_gen failed uid={uid}: {e}")
 

@@ -6,7 +6,7 @@ Flask-сервер для Telegram Mini App.
 from flask import Flask, jsonify, send_from_directory, request, Response
 from flask_cors import CORS
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials as ServiceCredentials
 import logging
 import os
 import json
@@ -45,14 +45,11 @@ DEBUG_TOKEN = os.environ.get("DEBUG_TOKEN", "")
 CREDS_JSON_ENV = os.environ.get("GOOGLE_CREDS_JSON")
 if CREDS_JSON_ENV:
     creds_dict = json.loads(CREDS_JSON_ENV)
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(creds_dict, tmp)
-    tmp.close()
-    creds_file = tmp.name
 else:
-    creds_file = "creds.json"
+    with open("creds.json") as f:
+        creds_dict = json.load(f)
 
-creds        = ServiceAccountCredentials.from_json_keyfile_name(creds_file, scope)
+creds = ServiceCredentials.from_service_account_info(creds_dict, scopes=scope)
 client       = None
 spreadsheet  = None
 products_ws  = None
@@ -69,7 +66,7 @@ def _connect_sheets():
     """Подключиться/переподключиться к Google Sheets. Не бросает исключений."""
     global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws
     try:
-        client      = gspread.authorize(creds)
+        client      = gspread.Client(auth=creds)
         spreadsheet = client.open("VAPE SHOP")
         products_ws = spreadsheet.worksheet("Товары")
         clients_ws  = spreadsheet.worksheet("Клиенты")
@@ -352,7 +349,10 @@ def register_promo():
 def proxy_photo(file_id: str):
     """Прокси для картинок Google Drive через сервисный аккаунт."""
     try:
-        token = creds.get_access_token().access_token
+        import google.auth.transport.requests as google_transport
+        req = google_transport.Request()
+        creds.refresh(req)
+        token = creds.token
         url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
         resp = http_requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10, stream=True)
         if resp.status_code != 200:

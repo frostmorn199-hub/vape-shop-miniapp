@@ -11,9 +11,27 @@ import logging
 import os
 import json
 import tempfile
+import time
+import random
+import string
 import requests as http_requests
 
 logging.basicConfig(level=logging.INFO)
+
+# ── In-memory TTL cache ───────────────────────────────────────
+_cache: dict = {}
+
+def _cache_get(key: str, ttl: int):
+    entry = _cache.get(key)
+    if entry and time.time() - entry["ts"] < ttl:
+        return entry["data"]
+    return None
+
+def _cache_set(key: str, data):
+    _cache[key] = {"data": data, "ts": time.time()}
+
+def _cache_del(key: str):
+    _cache.pop(key, None)
 
 import os as _os
 _static = "webapp" if _os.path.isdir("webapp") else "."
@@ -80,9 +98,14 @@ def get_referral_level(count: int):
     return None, 0
 
 
+@app.route("/api/ping")
+def api_ping():
+    """Keep-alive endpoint — вызывается клиентом при первой загрузке."""
+    return jsonify({"ok": True})
+
 @app.route("/api/version")
 def api_version():
-    return jsonify({"version": "3.0", "build": "2026-05-09"})
+    return jsonify({"version": "3.1", "build": "2026-05-13"})
 
 @app.route("/")
 def index():
@@ -90,12 +113,24 @@ def index():
 
 @app.route("/api/products")
 def get_products():
+    cached = _cache_get("products", ttl=60)
+    if cached is not None:
+        return jsonify(cached)
     try:
         data = products_ws.get_all_records()
-        return jsonify([p for p in data if p.get("Остаток", 0) > 0])
+        # int(...or 0) защищает от пустой строки "" возвращаемой gspread для пустых ячеек
+        result = [p for p in data if int(p.get("Остаток", 0) or 0) > 0]
+        _cache_set("products", result)
+        return jsonify(result)
     except Exception as e:
         logging.error(f"get_products: {e}")
         return jsonify([])
+
+@app.route("/api/cache/clear", methods=["POST"])
+def clear_cache():
+    """Сбрасывает кэш продуктов — вызывается ботом после подтверждения заказа."""
+    _cache_del("products")
+    return jsonify({"ok": True})
 
 @app.route("/api/debug/<int:uid>")
 def debug_user(uid: int):
@@ -122,23 +157,28 @@ def debug_user(uid: int):
 
 @app.route("/api/loyalty/<int:uid>")
 def get_user_loyalty(uid: int):
+    cache_key = f"loyalty:{uid}"
+    cached = _cache_get(cache_key, ttl=30)
+    if cached is not None:
+        return jsonify(cached)
     try:
         records = clients_ws.get_all_records()
-        for r in records:
+        for rec_idx, r in enumerate(records):
             try:
                 row_uid = int(r.get("ID", 0) or 0)
             except (ValueError, TypeError):
                 continue
             if row_uid == uid:
-                total      = int(r.get("Итого", 0) or 0)
-                vaypecoins = int(r.get("Вейпкоины", 0) or 0)
-                ref_code   = r.get("Промокод", "") or ""
+                sheet_row     = rec_idx + 2  # 1-indexed (+ header row)
+                total         = int(r.get("Итого", 0) or 0)
+                vaypecoins    = int(r.get("Вейпкоины", 0) or 0)
+                ref_code      = r.get("Промокод", "") or ""
+                wheel_discount = int(r.get("Промо_скидка", 0) or 0)
 
                 level_name, discount = get_loyalty(total)
                 sorted_loyalty = sorted(LOYALTY_LEVELS, key=lambda x: x[0])
                 next_t = next((t for t, n, d in sorted_loyalty if total < t), None)
 
-                # Реферальная статистика
                 ref_count = 0
                 if referrals_ws:
                     try:
@@ -155,19 +195,52 @@ def get_user_loyalty(uid: int):
                 sorted_ref = sorted(REFERRAL_LEVELS, key=lambda x: x[0])
                 next_ref_t = next((t for t, n, p in sorted_ref if ref_count < t), None)
 
-                # Дополнительная попытка по индексу колонки если по имени = 0
+                # Fallback: читаем вейпкоины напрямую по индексу колонки (col 8 → index 7)
                 if vaypecoins == 0:
                     try:
-                        row_vals = clients_ws.row_values(records.index(r) + 2)
+                        row_vals = clients_ws.row_values(sheet_row)
                         if len(row_vals) >= 8:
                             vaypecoins = int(row_vals[7] or 0)
                     except Exception:
                         pass
 
-                return jsonify({
+                # Fallback: читаем промокод напрямую по индексу колонки (col 6 → index 5)
+                if not ref_code:
+                    try:
+                        row_vals = clients_ws.row_values(sheet_row)
+                        if len(row_vals) >= 6:
+                            candidate = str(row_vals[5] or "").strip()
+                            if len(candidate) >= 4 and candidate.replace("-", "").isalnum():
+                                ref_code = candidate
+                    except Exception:
+                        pass
+
+                # Автогенерация промокода если у пользователя его нет
+                if not ref_code:
+                    try:
+                        existing_codes = {
+                            str(rr.get("Промокод", "") or "").upper()
+                            for rr in records
+                            if rr.get("Промокод")
+                        }
+                        for _ in range(100):
+                            new_code = ''.join(
+                                random.choices(string.ascii_uppercase + string.digits, k=6)
+                            )
+                            if new_code.upper() not in existing_codes:
+                                break
+                        clients_ws.update_cell(sheet_row, 6, new_code)
+                        ref_code = new_code
+                        _cache_del(cache_key)
+                        logging.info(f"Auto-generated promo code {new_code} for uid {uid}")
+                    except Exception as e:
+                        logging.warning(f"promo_gen failed uid={uid}: {e}")
+
+                result = {
                     "total":              total,
                     "level":              level_name,
                     "discount":           discount,
+                    "wheel_discount":     wheel_discount,
                     "next_threshold":     next_t,
                     "vaypecoins":         vaypecoins,
                     "ref_code":           ref_code,
@@ -175,14 +248,16 @@ def get_user_loyalty(uid: int):
                     "ref_level":          ref_level_name,
                     "ref_pct":            ref_pct,
                     "next_ref_threshold": next_ref_t,
-                })
+                }
+                _cache_set(cache_key, result)
+                return jsonify(result)
     except Exception as e:
         logging.error(f"get_user_loyalty: {e}")
 
     return jsonify({
-        "total": 0, "level": None, "discount": 0, "next_threshold": 20_000,
-        "vaypecoins": 0, "ref_code": "", "ref_count": 0,
-        "ref_level": None, "ref_pct": 0, "next_ref_threshold": 1,
+        "total": 0, "level": None, "discount": 0, "wheel_discount": 0,
+        "next_threshold": 20_000, "vaypecoins": 0, "ref_code": "",
+        "ref_count": 0, "ref_level": None, "ref_pct": 0, "next_ref_threshold": 1,
     })
 
 
@@ -259,6 +334,7 @@ def add_coins():
                     new_val = round(current + vc_earned, 2)
                     clients_ws.update_cell(idx + 2, vc_col, new_val)
                     logging.info(f"add_coins uid={uid} smoke={smoke} +{vc_earned} => {new_val}")
+                    _cache_del(f"loyalty:{uid}")
                     return jsonify({"ok": True, "earned": vc_earned, "total": new_val})
             except Exception:
                 continue

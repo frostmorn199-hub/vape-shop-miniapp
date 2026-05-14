@@ -14,11 +14,18 @@ import random
 import string
 import time
 import asyncio
+import os
+import functools
+from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+import aiohttp
 
+load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-API_TOKEN = "8751207190:AAEm1ZeGSJQn0LCKKIq6rd_GZxAChr2IhR0"
-ADMIN_ID = 525971484
+API_TOKEN  = os.getenv("API_TOKEN")
+ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
+SERVER_URL = os.getenv("SERVER_URL", "https://vape-shop-miniapp.onrender.com")
 SELLER_IDS = [8784410820, 525971484, 5710542507]
 PICKUP_ADDRESS = "Кривошеина 13/2"
 WEBAPP_URL = "https://frostmorn199-hub.github.io/vape-shop-miniapp"
@@ -100,6 +107,65 @@ promos_ws    = None
 
 cart     = {}
 user_qty = {}
+
+# Единственный поток для всех GSheets-операций — gspread не потокобезопасен,
+# но event loop не должен блокироваться синхронными запросами к API.
+_gs_executor = ThreadPoolExecutor(max_workers=1)
+
+async def _run(func, *args, **kwargs):
+    """Запускает синхронную GSheets-функцию в отдельном потоке."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_gs_executor, functools.partial(func, *args, **kwargs))
+
+async def _clear_products_cache():
+    """Сбрасывает кэш продуктов на сервере Mini App после изменения остатков."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                f"{SERVER_URL}/api/cache/clear",
+                timeout=aiohttp.ClientTimeout(total=5),
+            )
+        logging.info("products cache cleared")
+    except Exception as e:
+        logging.warning(f"cache clear failed: {e}")
+
+
+CART_FILE   = "cart.json"
+NOTIFY_FILE = "notify.json"
+
+def _save_carts():
+    try:
+        with open(CART_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): {str(p): q for p, q in v.items()} for k, v in cart.items()}, f)
+    except Exception as e:
+        logging.error(f"_save_carts: {e}")
+
+def _load_carts():
+    global cart
+    try:
+        if os.path.exists(CART_FILE):
+            with open(CART_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+                cart = {int(k): {int(p): q for p, q in v.items()} for k, v in raw.items()}
+    except Exception as e:
+        logging.error(f"_load_carts: {e}")
+
+def _save_notifies():
+    try:
+        with open(NOTIFY_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in _notify_subscriptions.items()}, f)
+    except Exception as e:
+        logging.error(f"_save_notifies: {e}")
+
+def _load_notifies():
+    global _notify_subscriptions
+    try:
+        if os.path.exists(NOTIFY_FILE):
+            with open(NOTIFY_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+                _notify_subscriptions = {int(k): v for k, v in raw.items()}
+    except Exception as e:
+        logging.error(f"_load_notifies: {e}")
 
 
 class OrderState(StatesGroup):
@@ -297,8 +363,8 @@ def update_partners_row(uid: int):
         all_partners = partners_ws.get_all_records()
         for idx, p in enumerate(all_partners):
             if int(p.get("ID", 0)) == uid:
-                partners_ws.update(f"A{idx+2}:F{idx+2}",
-                                   [[uid, contact, promo, total_inv, active_inv, reg_date]])
+                partners_ws.update([[uid, contact, promo, total_inv, active_inv, reg_date]],
+                                   f"A{idx+2}:F{idx+2}")
                 return
         partners_ws.append_row([uid, contact, promo, total_inv, active_inv, reg_date])
     except Exception as e:
@@ -557,40 +623,42 @@ def write_order_to_sales(order_id: str):
 # ── Начисление вейпкоинов после подтверждения ───────────────
 
 async def process_order_confirmed(order_id: str):
-    order = get_order(order_id)
+    order = await _run(get_order, order_id)
     if not order:
         return
 
     uid         = int(order.get("Покупатель_ID", 0))
     final_total = int(order.get("Финальная_сумма", 0))
     contact     = order.get("Контакт", "—")
-    referrer_id = get_referrer_id(uid)
+    referrer_id = await _run(get_referrer_id, uid)
 
     if not referrer_id:
         return
 
-    if not is_promo_activated(uid):
+    if not await _run(is_promo_activated, uid):
         if final_total >= MIN_REFERRAL_PURCHASE:
-            # Активируем промокод
-            set_promo_activated(uid)
-            activate_referral_record(uid)
-            add_vaypecoins(uid, REFERRAL_BONUS_COINS)
+            await _run(set_promo_activated, uid)
+            await _run(activate_referral_record, uid)
+            await _run(add_vaypecoins, uid, REFERRAL_BONUS_COINS)
 
-            # Начисляем кэшбек пригласившему
-            ref_count = get_active_referral_count(referrer_id)
+            ref_count = await _run(get_active_referral_count, referrer_id)
             _, pct = get_referral_level(ref_count)
             cashback = int(final_total * pct / 100)
-            new_coins = add_vaypecoins(referrer_id, cashback) if cashback > 0 else get_vaypecoins(referrer_id)
+            if cashback > 0:
+                new_coins = await _run(add_vaypecoins, referrer_id, cashback)
+            else:
+                new_coins = await _run(get_vaypecoins, referrer_id)
 
             ref_level_name, _ = get_referral_level(ref_count)
             level_text = f" (уровень: {ref_level_name})" if ref_level_name else ""
+            buyer_coins = await _run(get_vaypecoins, uid)
 
             try:
                 await bot.send_message(
                     uid,
                     f"🎉 Промокод активирован!\n"
                     f"+{REFERRAL_BONUS_COINS} вейпкоинов на баланс!\n"
-                    f"💎 Баланс: {get_vaypecoins(uid)} VC"
+                    f"💎 Баланс: {buyer_coins} VC"
                 )
             except Exception as e:
                 logging.error(f"notify referred: {e}")
@@ -615,12 +683,11 @@ async def process_order_confirmed(order_id: str):
             except Exception as e:
                 logging.error(f"notify promo not activated: {e}")
     else:
-        # Промокод уже активен — начисляем кэшбек
-        ref_count = get_active_referral_count(referrer_id)
+        ref_count = await _run(get_active_referral_count, referrer_id)
         _, pct = get_referral_level(ref_count)
         cashback = int(final_total * pct / 100)
         if cashback > 0:
-            new_coins = add_vaypecoins(referrer_id, cashback)
+            new_coins = await _run(add_vaypecoins, referrer_id, cashback)
             ref_level_name, _ = get_referral_level(ref_count)
             level_text = f" (уровень: {ref_level_name})" if ref_level_name else ""
             try:
@@ -727,13 +794,14 @@ def webapp_keyboard():
 async def start(msg: types.Message, state: FSMContext):
     await state.finish()
     contact = f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id)
-    ensure_client(msg.from_user.id, contact)
+    await _run(ensure_client, msg.from_user.id, contact)
     await msg.answer("Добро пожаловать в VAPE SHOP VRN 💨\nПриятных покупок 🛒", reply_markup=webapp_keyboard())
     await msg.answer("Выбери раздел:", reply_markup=main_menu())
 
 @dp.message_handler(commands=["loyalty"], state="*")
 async def loyalty_cmd(msg: types.Message):
-    await msg.answer(loyalty_full_text(msg.from_user.id), parse_mode="Markdown")
+    text = await _run(loyalty_full_text, msg.from_user.id)
+    await msg.answer(text, parse_mode="Markdown")
 
 @dp.message_handler(commands=["app"], state="*")
 async def app_cmd(msg: types.Message):
@@ -768,7 +836,7 @@ async def cancel_stock_adj(call: types.CallbackQuery, state: FSMContext):
 @dp.message_handler(state=AdjustStockState.waiting_product_name)
 async def stock_search_product(msg: types.Message, state: FSMContext):
     query = msg.text.strip().lower()
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     matches = [
         i for i in data
         if query in i.get("Название", "").lower() or query in i.get("Бренд", "").lower()
@@ -788,7 +856,7 @@ async def stock_search_product(msg: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data.startswith("stockitem_"), state=AdjustStockState.waiting_product_name)
 async def stock_select_item(call: types.CallbackQuery, state: FSMContext):
     pid = int(call.data.split("_")[1])
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     for item in data:
         if item["ID"] == pid:
             await state.update_data(product_id=pid, product_name=item["Название"],
@@ -824,10 +892,11 @@ async def stock_set_quantity(msg: types.Message, state: FSMContext):
     product_brand = data_state.get("product_brand", "")
 
     new_stock = max(0, current_stock - qty)
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     for idx, item in enumerate(data):
         if item["ID"] == pid:
-            products_ws.update_cell(idx + 2, 7, new_stock)
+            await _run(products_ws.update_cell, idx + 2, 7, new_stock)
+            await _clear_products_cache()
             await state.finish()
             status = "📭 Товар закончился" if new_stock == 0 else f"📊 Стало: {new_stock} шт."
             await msg.answer(
@@ -843,7 +912,8 @@ async def stock_set_quantity(msg: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data == "my_loyalty")
 async def my_loyalty_callback(call: types.CallbackQuery):
     await call.answer()
-    await call.message.answer(loyalty_full_text(call.from_user.id), parse_mode="Markdown")
+    text = await _run(loyalty_full_text, call.from_user.id)
+    await call.message.answer(text, parse_mode="Markdown")
 
 @dp.callback_query_handler(lambda c: c.data == "back_main", state="*")
 async def back(call: types.CallbackQuery, state: FSMContext):
@@ -873,8 +943,8 @@ async def process_promo(msg: types.Message, state: FSMContext):
     await state.finish()
     code = msg.text.strip().upper()
     contact = f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id)
-    ensure_client(msg.from_user.id, contact)
-    success, text = apply_promo_code(msg.from_user.id, code)
+    await _run(ensure_client, msg.from_user.id, contact)
+    success, text = await _run(apply_promo_code, msg.from_user.id, code)
     await msg.answer(text)
 
 
@@ -886,7 +956,7 @@ async def confirm_order(call: types.CallbackQuery):
         await call.answer("Нет доступа", show_alert=True)
         return
     order_id = call.data[len("order_confirm_"):]
-    order = get_order(order_id)
+    order = await _run(get_order, order_id)
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
@@ -894,18 +964,17 @@ async def confirm_order(call: types.CallbackQuery):
         await call.answer("Заказ уже подтверждён", show_alert=True)
         return
 
-    set_order_status(order_id, "confirmed")
+    await _run(set_order_status, order_id, "confirmed")
     await call.message.edit_reply_markup(None)
     await call.message.reply("✅ Заказ подтверждён!")
     await call.answer("Выдача подтверждена")
 
-    # Записываем продажу и обновляем лояльность только сейчас
-    write_order_to_sales(order_id)
+    await _run(write_order_to_sales, order_id)
 
     uid = int(order.get("Покупатель_ID", 0))
     contact = order.get("Контакт", "—")
     final_total = int(order.get("Финальная_сумма", 0) or 0)
-    new_total = get_user_total(uid)
+    new_total = await _run(get_user_total, uid)
     new_level, _ = get_loyalty(new_total)
 
     confirm_text = "✅ Твой заказ подтверждён продавцом! Спасибо за покупку 🙌"
@@ -928,7 +997,7 @@ async def status_step(call: types.CallbackQuery):
     step = int(parts[-1])
     order_id = "_".join(parts[1:-1])  # reconstruct "uid_timestamp"
 
-    order = get_order(order_id)
+    order = await _run(get_order, order_id)
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
@@ -944,7 +1013,7 @@ async def status_step(call: types.CallbackQuery):
     label, buyer_msg = statuses[step]
     uid = int(order.get("Покупатель_ID", 0))
 
-    set_order_status(order_id, label)
+    await _run(set_order_status, order_id, label)
     try:
         await bot.send_message(uid, buyer_msg)
     except Exception as e:
@@ -957,7 +1026,7 @@ async def status_step(call: types.CallbackQuery):
         await call.message.edit_reply_markup(None)
         await call.message.reply(f"✅ Статус «{label}» — заказ завершён!")
         await call.answer(label)
-        write_order_to_sales(order_id)
+        await _run(write_order_to_sales, order_id)
         await process_order_confirmed(order_id)
     else:
         delivery_key = "courier" if is_courier else "pickup"
@@ -972,7 +1041,7 @@ async def cancel_order(call: types.CallbackQuery):
         await call.answer("Нет доступа", show_alert=True)
         return
     order_id = call.data[len("order_cancel_"):]
-    order = get_order(order_id)
+    order = await _run(get_order, order_id)
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
@@ -981,9 +1050,9 @@ async def cancel_order(call: types.CallbackQuery):
         await call.answer("Заказ уже обработан", show_alert=True)
         return
 
-    # Возвращаем товары на остаток
-    restore_order_stock(order_id)
-    set_order_status(order_id, "Отменен")
+    await _run(restore_order_stock, order_id)
+    await _run(set_order_status, order_id, "Отменен")
+    await _clear_products_cache()
     await call.message.edit_reply_markup(None)
     await call.message.reply("❌ Заказ отменён. Товары возвращены на остаток.")
     await call.answer("Заказ отменён")
@@ -1000,7 +1069,7 @@ async def cancel_order(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("cat_"))
 async def brands_handler(call: types.CallbackQuery):
     category = call.data[4:]
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     brand_set = {i["Бренд"] for i in data if i["Категория"] == category and i["Остаток"] > 0}
     if not brand_set:
         await call.answer("Нет товаров в этой категории", show_alert=True)
@@ -1014,7 +1083,7 @@ async def brands_handler(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("brand_"))
 async def puffs_handler(call: types.CallbackQuery):
     category, brand = call.data[6:].split("|", 1)
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     puffs_set = {
         str(i["Затяжки"]) for i in data
         if i["Категория"] == category and i["Бренд"] == brand
@@ -1032,7 +1101,7 @@ async def puffs_handler(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("puffs_"))
 async def show_products(call: types.CallbackQuery):
     category, brand, puffs = call.data[6:].split("|", 2)
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     kb = InlineKeyboardMarkup()
     for i in data:
         if i["Категория"] == category and i["Бренд"] == brand and str(i["Затяжки"]) == puffs and i["Остаток"] > 0:
@@ -1041,7 +1110,7 @@ async def show_products(call: types.CallbackQuery):
     await call.message.edit_text("Выбери товар:", reply_markup=kb)
 
 async def show_products_direct(call: types.CallbackQuery, category: str, brand: str):
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     kb = InlineKeyboardMarkup()
     for i in data:
         if i["Категория"] == category and i["Бренд"] == brand and i["Остаток"] > 0:
@@ -1067,7 +1136,7 @@ def item_keyboard(pid: int, qty: int) -> InlineKeyboardMarkup:
 @dp.callback_query_handler(lambda c: c.data.startswith("item_"))
 async def item_handler(call: types.CallbackQuery):
     pid = int(call.data.split("_")[1])
-    for i in products_ws.get_all_records():
+    for i in await _run(products_ws.get_all_records):
         if i["ID"] == pid:
             user_qty[call.from_user.id] = 1
             await call.message.edit_text(
@@ -1107,6 +1176,7 @@ async def add_to_cart(call: types.CallbackQuery):
     qty = user_qty.get(uid, 1)
     cart.setdefault(uid, {})
     cart[uid][pid] = cart[uid].get(pid, 0) + qty
+    _save_carts()
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🛒 Перейти в корзину", callback_data="open_cart"))
     kb.add(InlineKeyboardButton("⬅️ Продолжить покупки", callback_data="back_main"))
@@ -1124,7 +1194,7 @@ async def show_cart(msg: types.Message, uid: int):
         await msg.answer("🛒 Корзина пустая", reply_markup=kb)
         return
 
-    data = products_ws.get_all_records()
+    data = await _run(products_ws.get_all_records)
     raw_total = 0
     text = "🛒 Твоя корзина:\n\n"
     kb = InlineKeyboardMarkup()
@@ -1138,7 +1208,8 @@ async def show_cart(msg: types.Message, uid: int):
                 text += f"{i['Название']}\n{qty} × {price}₽ = {summ}₽\n\n"
                 kb.add(InlineKeyboardButton(f"❌ {i['Название']}", callback_data=f"remove_{pid}"))
 
-    level_name, discount = get_loyalty(get_user_total(uid))
+    user_total = await _run(get_user_total, uid)
+    level_name, discount = get_loyalty(user_total)
     if discount > 0:
         disc_sum = int(raw_total * discount / 100)
         text += f"💰 Сумма: {raw_total:,}₽\n"
@@ -1147,7 +1218,7 @@ async def show_cart(msg: types.Message, uid: int):
     else:
         text += f"💰 Итого: {raw_total:,}₽"
 
-    coins = get_vaypecoins(uid)
+    coins = await _run(get_vaypecoins, uid)
     if coins > 0:
         text += f"\n🪙 Вейпкоины: {coins} VC"
 
@@ -1162,12 +1233,14 @@ async def remove_item(call: types.CallbackQuery):
     pid = int(call.data.split("_")[1])
     if uid in cart and pid in cart[uid]:
         del cart[uid][pid]
+    _save_carts()
     await call.answer("Удалено")
     await show_cart(call.message, uid)
 
 @dp.callback_query_handler(lambda c: c.data == "clear")
 async def clear_cart(call: types.CallbackQuery):
     cart[call.from_user.id] = {}
+    _save_carts()
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⬅️ В меню", callback_data="back_main"))
     await call.message.edit_text("🛒 Корзина очищена", reply_markup=kb)
@@ -1244,16 +1317,16 @@ async def get_comment(msg: types.Message, state: FSMContext):
 async def show_payment_options(msg: types.Message, state: FSMContext, uid: int = None):
     if uid is None:
         uid = msg.from_user.id
-    user_total = get_user_total(uid)
+    user_total = await _run(get_user_total, uid)
     level_name, discount = get_loyalty(user_total)
 
-    data_gs = products_ws.get_all_records()
+    data_gs = await _run(products_ws.get_all_records)
     raw_total = sum(
         item["Цена (₽)"] * qty
         for pid, qty in cart.get(uid, {}).items()
         for item in data_gs if item["ID"] == pid
     )
-    wheel_discount = get_user_wheel_discount(uid)
+    wheel_discount = await _run(get_user_wheel_discount, uid)
     total_discount = discount + wheel_discount
     disc_sum    = int(raw_total * total_discount / 100)
     items_total = raw_total - disc_sum
@@ -1301,11 +1374,11 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
         await call.answer("Корзина пустая", show_alert=True)
         return
 
-    data_gs     = products_ws.get_all_records()
+    data_gs     = await _run(products_ws.get_all_records)
     raw_total   = 0
     order_lines = []
     items_for_json = []
-    user_total  = get_user_total(uid)
+    user_total  = await _run(get_user_total, uid)
     level_name, discount = get_loyalty(user_total)
 
     for pid, qty in list(cart[uid].items()):
@@ -1318,28 +1391,28 @@ async def finish(call: types.CallbackQuery, state: FSMContext):
                 order_lines.append(
                     f"{item['Бренд']}{puffs_str} {item['Название']} х{qty} = {summ:,}₽"
                 )
-                # Резервируем товар (уменьшаем остаток)
-                products_ws.update_cell(idx + 2, 7, max(0, item["Остаток"] - qty))
+                await _run(products_ws.update_cell, idx + 2, 7, max(0, item["Остаток"] - qty))
                 items_for_json.append({"id": pid, "qty": qty})
 
-    wheel_discount = get_user_wheel_discount(uid)
+    wheel_discount = await _run(get_user_wheel_discount, uid)
     total_discount = discount + wheel_discount
     disc_sum    = int(raw_total * total_discount / 100)
     items_total = raw_total - disc_sum
     delivery_fee = DELIVERY_FEE if delivery == "courier" and items_total < FREE_DELIVERY_THRESHOLD else 0
     final_total = items_total + delivery_fee
     cart[uid]   = {}
+    _save_carts()
     if wheel_discount > 0:
-        clear_user_wheel_discount(uid)
+        await _run(clear_user_wheel_discount, uid)
 
     pay_label      = "Перевод на карту" if pay == "card" else "Наличные"
     delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
     summary        = "\n".join(order_lines)
     order_id       = f"{uid}_{int(time.time())}"
 
-    # Сохраняем заказ (продажа запишется только после подтверждения продавцом)
-    save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay,
+    await _run(save_order, order_id, uid, contact, raw_total, final_total, delivery, address, pay,
                summary, json.dumps(items_for_json))
+    await _clear_products_cache()
 
     user_text = f"✅ Заказ оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
     if discount > 0:
@@ -1432,7 +1505,7 @@ async def do_broadcast(msg: types.Message, state: FSMContext):
         return
 
     try:
-        records = clients_ws.get_all_records()
+        records = await _run(clients_ws.get_all_records)
     except Exception as e:
         await msg.answer(f"❌ Ошибка получения клиентов: {e}")
         return
@@ -1496,6 +1569,7 @@ async def save_notify(msg: types.Message, state: FSMContext):
         _notify_subscriptions[uid] = []
     if keyword not in _notify_subscriptions[uid]:
         _notify_subscriptions[uid].append(keyword)
+    _save_notifies()
     await msg.answer(
         f"✅ Подписка оформлена!\nКак только «{msg.text.strip()}» появится в наличии — уведомим тебя 🔔"
     )
@@ -1510,7 +1584,7 @@ async def checkstock_cmd(msg: types.Message):
         return
 
     try:
-        products = products_ws.get_all_records()
+        products = await _run(products_ws.get_all_records)
     except Exception as e:
         await msg.answer(f"❌ Ошибка: {e}")
         return
@@ -1541,6 +1615,7 @@ async def checkstock_cmd(msg: types.Message):
             _notify_subscriptions[uid] = still_waiting
         else:
             del _notify_subscriptions[uid]
+    _save_notifies()
 
     await msg.answer(f"✅ Проверка завершена. Уведомлено пользователей: {notified}")
 
@@ -1560,23 +1635,24 @@ async def web_app_order(msg: types.Message):
         comment     = data.get("comment", "")
         vcoin_total = int(data.get("vcoin_total", 0) or 0)
 
-        user_total  = get_user_total(uid)
+        user_total  = await _run(get_user_total, uid)
         level_name, discount = get_loyalty(user_total)
+        wheel_discount = await _run(get_user_wheel_discount, uid)
+        total_discount = discount + wheel_discount
 
         now         = datetime.now().strftime("%Y-%m-%d %H:%M")
         raw_total   = sum(i["price"] * i["qty"] for i in items)
-        disc_sum    = int(raw_total * discount / 100)
+        disc_sum    = int(raw_total * total_discount / 100)
         items_total = raw_total - disc_sum
         delivery_fee = DELIVERY_FEE if delivery == "courier" and items_total < FREE_DELIVERY_THRESHOLD else 0
         final_total = items_total + delivery_fee
 
-        data_gs        = products_ws.get_all_records()
+        data_gs        = await _run(products_ws.get_all_records)
         order_lines    = []
         items_for_json = []
 
         for it in items:
             summ = it["price"] * it["qty"]
-            # Ищем бренд и затяжки из таблицы товаров
             brand_str = ""
             puffs_str = ""
             for idx, row in enumerate(data_gs):
@@ -1585,8 +1661,7 @@ async def web_app_order(msg: types.Message):
                     puffs_val = row.get("Затяжки", "")
                     if puffs_val:
                         puffs_str = f" {puffs_val}"
-                    # Резервируем товар
-                    products_ws.update_cell(idx + 2, 7, max(0, row["Остаток"] - it["qty"]))
+                    await _run(products_ws.update_cell, idx + 2, 7, max(0, row["Остаток"] - it["qty"]))
                     break
             order_lines.append(
                 f"{brand_str}{puffs_str} {it['name']} х{it['qty']} = {summ:,}₽"
@@ -1595,13 +1670,17 @@ async def web_app_order(msg: types.Message):
 
         summary = "\n".join(order_lines)
 
+        # Очищаем промокод колеса после применения
+        if wheel_discount > 0:
+            await _run(clear_user_wheel_discount, uid)
+
         # VCoin-оплата: проверяем и списываем VCoin
         if vcoin_total > 0:
-            user_coins = get_vaypecoins(uid)
+            user_coins = await _run(get_vaypecoins, uid)
             if user_coins < vcoin_total:
                 await msg.answer(f"❌ Недостаточно VCoin! Нужно {vcoin_total} VC, у тебя {user_coins} VC.")
                 return
-            add_vaypecoins(uid, -vcoin_total)
+            await _run(add_vaypecoins, uid, -vcoin_total)
 
         if pay == "vcoin":
             pay_label = "VCoin 🪙"
@@ -1613,13 +1692,15 @@ async def web_app_order(msg: types.Message):
         delivery_label = "Доставка" if delivery == "courier" else "Самовывоз"
         order_id       = f"{uid}_{int(time.time())}"
 
-        # Сохраняем заказ
-        save_order(order_id, uid, contact, raw_total, final_total, delivery, address, pay,
+        await _run(save_order, order_id, uid, contact, raw_total, final_total, delivery, address, pay,
                    summary, json.dumps(items_for_json))
+        await _clear_products_cache()
 
         user_text = f"✅ Заказ из Mini App оформлен!\n\n{summary}\n\n💰 Сумма: {raw_total:,}₽"
         if discount > 0:
-            user_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{disc_sum:,}₽"
+            user_text += f"\n🎁 Скидка {level_name} (-{discount}%): -{int(raw_total * discount / 100):,}₽"
+        if wheel_discount > 0:
+            user_text += f"\n🎰 Промокод колеса (-{wheel_discount}%): -{int(raw_total * wheel_discount / 100):,}₽"
         if delivery == "courier":
             if delivery_fee > 0:
                 user_text += f"\n🚚 Доставка: +{delivery_fee:,}₽"
@@ -1643,7 +1724,9 @@ async def web_app_order(msg: types.Message):
             f"💰 Сумма: {raw_total:,}₽"
         )
         if discount > 0:
-            seller_text += f"\n🎁 Скидка {level_name}: -{disc_sum:,}₽"
+            seller_text += f"\n🎁 Скидка {level_name}: -{int(raw_total * discount / 100):,}₽"
+        if wheel_discount > 0:
+            seller_text += f"\n🎰 Промокод колеса (-{wheel_discount}%): -{int(raw_total * wheel_discount / 100):,}₽"
         if delivery == "courier":
             if delivery_fee > 0:
                 seller_text += f"\n🚚 Доставка: +{delivery_fee:,}₽"
@@ -1672,6 +1755,8 @@ async def web_app_order(msg: types.Message):
 
 async def on_startup(dp):
     init_sheets()
+    _load_carts()
+    _load_notifies()
     await bot.set_my_commands([
         types.BotCommand("start",      "Главное меню"),
         types.BotCommand("app",        "Открыть Mini App"),

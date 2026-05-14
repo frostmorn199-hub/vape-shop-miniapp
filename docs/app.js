@@ -46,30 +46,56 @@ let loyalty    = {
 
 // ── INIT ──────────────────────────────────────────────────────
 
+function fetchJSON(url, timeoutMs = 12000) {
+  return Promise.race([
+    fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), timeoutMs)),
+  ]);
+}
+
 async function init() {
   buildTabs();
 
+  // Пинг для пробуждения Render.com сервера (cold start)
+  fetch(`${BASE}/api/ping`).catch(() => {});
+
   const uid = tg.initDataUnsafe?.user?.id;
-  if (uid) {
-    try {
-      const r = await fetch(`${BASE}/api/loyalty/${uid}`);
-      loyalty = await r.json();
-    } catch (e) { console.warn("loyalty fetch failed", e); }
+
+  // Загружаем loyalty и products параллельно — вдвое быстрее
+  const [loyaltyResult, productsResult] = await Promise.allSettled([
+    uid ? fetchJSON(`${BASE}/api/loyalty/${uid}`) : Promise.resolve(null),
+    fetchJSON(`${BASE}/api/products`),
+  ]);
+
+  if (loyaltyResult.status === "fulfilled" && loyaltyResult.value) {
+    loyalty = loyaltyResult.value;
+  } else if (loyaltyResult.status === "rejected") {
+    console.warn("loyalty fetch failed", loyaltyResult.reason);
   }
+
+  if (productsResult.status === "fulfilled" && Array.isArray(productsResult.value)) {
+    products = productsResult.value;
+  } else {
+    console.warn("products fetch failed", productsResult.reason);
+  }
+
   updateLoyaltyBar();
   updateCheckoutVC();
-
-  try {
-    const r = await fetch(`${BASE}/api/products`);
-    products = await r.json();
-    renderProducts();
-  } catch (e) {
-    document.getElementById("products-grid").innerHTML =
-      '<div class="placeholder">Не удалось загрузить товары 😔</div>';
-  }
-
+  renderProducts();
   updateFab();
   buildLoyaltyScreen();
+}
+
+async function retryLoadProducts() {
+  const grid = document.getElementById("products-grid");
+  grid.innerHTML = '<div class="placeholder">Загружаем товары…</div>';
+  try {
+    products = await fetchJSON(`${BASE}/api/products`);
+    renderProducts();
+    updateFab();
+  } catch (e) {
+    grid.innerHTML = '<div class="placeholder">Ошибка загрузки 😔<br><button class="retry-btn" onclick="retryLoadProducts()">🔄 Повторить</button></div>';
+  }
 }
 
 
@@ -359,7 +385,10 @@ function renderProducts() {
   if (currentSort === "desc") list = [...list].sort((a, b) => b["Цена (₽)"] - a["Цена (₽)"]);
 
   if (!list.length) {
-    grid.innerHTML = '<div class="placeholder">Товаров нет 🤷</div>';
+    // Если products вообще не загружены — показываем retry
+    grid.innerHTML = products.length === 0
+      ? '<div class="placeholder">Не удалось загрузить товары 😔<br><button class="retry-btn" onclick="retryLoadProducts()">🔄 Повторить</button></div>'
+      : '<div class="placeholder">Товаров нет 🤷</div>';
     return;
   }
 
@@ -467,13 +496,18 @@ function renderCart() {
       </div>`;
   }).join("");
 
-  const disc    = loyalty.discount || 0;
-  const discSum = Math.round(raw * disc / 100);
+  const disc       = loyalty.discount || 0;
+  const wheelDisc  = loyalty.wheel_discount || 0;
+  const totalDisc  = disc + wheelDisc;
+  const discSum    = Math.round(raw * totalDisc / 100);
   const itemsTotal = raw - discSum;
 
   let html = `<div class="total-row"><span>Сумма</span><span>${raw.toLocaleString("ru")}₽</span></div>`;
   if (disc > 0) {
-    html += `<div class="total-row discount"><span>Скидка ${loyalty.level} (${disc}%)</span><span>−${discSum.toLocaleString("ru")}₽</span></div>`;
+    html += `<div class="total-row discount"><span>Скидка ${loyalty.level} (${disc}%)</span><span>−${Math.round(raw * disc / 100).toLocaleString("ru")}₽</span></div>`;
+  }
+  if (wheelDisc > 0) {
+    html += `<div class="total-row discount"><span>🎰 Промокод колеса (${wheelDisc}%)</span><span>−${Math.round(raw * wheelDisc / 100).toLocaleString("ru")}₽</span></div>`;
   }
   html += `<div class="total-row delivery-info-row"><span>🚚 Доставка</span><span>${itemsTotal >= FREE_DELIVERY_THRESHOLD ? "бесплатно 🎉" : `+${DELIVERY_FEE.toLocaleString("ru")}₽ (от ${FREE_DELIVERY_THRESHOLD.toLocaleString("ru")}₽)`}</span></div>`;
   if (hasVCoinItems()) {
@@ -542,14 +576,19 @@ function renderOrderSummary() {
     return `${p["Название"]} × ${qty} = ${sum.toLocaleString("ru")}₽`;
   }).join("<br>");
 
-  const disc    = loyalty.discount || 0;
-  const discSum = Math.round(raw * disc / 100);
-  let itemsTotal = raw - discSum;
+  const disc      = loyalty.discount || 0;
+  const wheelDisc = loyalty.wheel_discount || 0;
+  const totalDisc = disc + wheelDisc;
+  const discSum   = Math.round(raw * totalDisc / 100);
+  let itemsTotal  = raw - discSum;
 
   let html = `<strong>Состав:</strong><br>${lines}<br><br>`;
   html += `💰 Сумма: ${raw.toLocaleString("ru")}₽`;
   if (disc > 0) {
-    html += `<br>🎁 Скидка ${loyalty.level} (${disc}%): −${discSum.toLocaleString("ru")}₽`;
+    html += `<br>🎁 Скидка ${loyalty.level} (${disc}%): −${Math.round(raw * disc / 100).toLocaleString("ru")}₽`;
+  }
+  if (wheelDisc > 0) {
+    html += `<br>🎰 Промокод колеса (${wheelDisc}%): −${Math.round(raw * wheelDisc / 100).toLocaleString("ru")}₽`;
   }
 
   let deliveryFee = 0;
@@ -611,10 +650,12 @@ function submitOrder() {
   }));
 
   // Сохраняем в историю заказов
-  const disc    = loyalty.discount || 0;
+  const disc      = loyalty.discount || 0;
+  const wheelDisc = loyalty.wheel_discount || 0;
+  const totalDisc = disc + wheelDisc;
   let rawTotal  = 0;
   inCart.forEach(p => { rawTotal += p["Цена (₽)"] * (cart[p["ID"]] || 0); });
-  const discSum   = Math.round(rawTotal * disc / 100);
+  const discSum    = Math.round(rawTotal * totalDisc / 100);
   const itemsTotal = rawTotal - discSum;
   const delivFee  = delivery === "courier" && itemsTotal < FREE_DELIVERY_THRESHOLD ? DELIVERY_FEE : 0;
   const finalTotal = itemsTotal + delivFee;

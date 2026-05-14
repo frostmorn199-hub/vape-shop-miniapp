@@ -97,6 +97,18 @@ async function init() {
   updateFab();
   buildLoyaltyScreen();
   updateLoyaltyBadge();
+
+  // Авто-заполняем контакт из Telegram-профиля
+  const user = tg.initDataUnsafe?.user;
+  if (user) {
+    const inp = document.getElementById("inp-contact");
+    if (inp && !inp.value) {
+      inp.value = user.username ? `@${user.username}` : (user.phone_number ? `+${user.phone_number}` : "");
+      // Подсказка — пользователь может поменять
+      const hint = document.getElementById("contact-hint");
+      if (hint && inp.value) hint.textContent = "Заполнено из Telegram, можно изменить";
+    }
+  }
 }
 
 async function retryLoadProducts() {
@@ -571,13 +583,16 @@ function updateLoyaltyBadge() {
 function renderCart() {
   const itemsEl = document.getElementById("cart-items");
   const totalEl = document.getElementById("cart-total-block");
+  const formEl  = document.getElementById("checkout-form");
 
   const inCart = products.filter(p => cart[p["ID"]] > 0);
   if (!inCart.length) {
     itemsEl.innerHTML = '<div class="cart-empty">🛒 Корзина пустая</div>';
     totalEl.innerHTML = "";
+    if (formEl) formEl.classList.add("hidden");
     return;
   }
+  if (formEl) formEl.classList.remove("hidden");
 
   let raw = 0;
   itemsEl.innerHTML = inCart.map(p => {
@@ -934,10 +949,9 @@ function showScreen(name, navBtn) {
     navBtn.classList.add("active");
   }
 
-  if (name === "cart")     renderCart();
-  if (name === "checkout") { renderOrderSummary(); updateCheckoutVC(); }
-  if (name === "loyalty")  { buildLoyaltyScreen(); renderAchievements(); }
-  if (name === "history")  renderHistory();
+  if (name === "cart")    { renderCart(); renderOrderSummary(); updateCheckoutVC(); }
+  if (name === "loyalty") { buildLoyaltyScreen(); renderAchievements(); }
+  if (name === "history") renderHistory();
 
   // Управление главной кнопкой TG
   if (name === "catalog" || name === "loyalty" || name === "history" || name === "success") {

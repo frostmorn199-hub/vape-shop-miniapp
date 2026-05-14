@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>VAPE SHOP</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="style.css?v=20260514d">
+  <link rel="stylesheet" href="style.css?v=20260514e">
 </head>
 <body>
 
@@ -74,29 +74,23 @@
     </div>
   </div>
 
-  <!-- ========== ЭКРАН: КОРЗИНА ========== -->
+  <!-- ========== ЭКРАН: КОРЗИНА + ОФОРМЛЕНИЕ ========== -->
   <div id="screen-cart" class="screen">
     <div class="screen-header">
       <span class="screen-title">Корзина</span>
     </div>
     <div id="cart-items"></div>
     <div id="cart-total-block"></div>
-    <div class="screen-footer">
-      <button class="btn-primary" onclick="showScreen('checkout', null)">Оформить заказ</button>
-    </div>
-  </div>
 
-  <!-- ========== ЭКРАН: ОФОРМЛЕНИЕ ========== -->
-  <div id="screen-checkout" class="screen">
-    <div class="screen-header">
-      <button class="back-btn" onclick="showScreen('cart', null)">← Назад</button>
-      <span class="screen-title">Оформление</span>
-    </div>
-    <div class="form-body">
+    <!-- Форма оформления — скрыта если корзина пуста -->
+    <div id="checkout-form" class="form-body hidden">
+
+      <div class="checkout-divider">📋 Оформление заказа</div>
 
       <div class="field-group">
-        <label class="field-label">Контакт (@username или телефон)</label>
+        <label class="field-label">Контакт для связи</label>
         <input type="text" id="inp-contact" class="field-input" placeholder="@username или +7 999 …">
+        <div class="field-hint" id="contact-hint"></div>
       </div>
 
       <div class="field-group">
@@ -169,7 +163,7 @@
 
       <div id="order-summary" class="order-summary"></div>
 
-      <button class="btn-primary btn-confirm" onclick="submitOrder()">✅ Подтвердить заказ</button>
+      <button class="btn-primary btn-confirm" onclick="submitOrder()">🛍️ Оформить заказ</button>
     </div>
   </div>
 
@@ -276,6 +270,6 @@
   </div>
 
   <!-- FAB корзина удалён — навигация через bottom-nav -->
-  <script src="app.js?v=20260514d"></script>
+  <script src="app.js?v=20260514e"></script>
 </body>
 </html>

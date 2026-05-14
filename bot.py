@@ -777,8 +777,8 @@ def loyalty_full_text(uid: int) -> str:
 
 def main_menu():
     kb = InlineKeyboardMarkup()
-    if WEBAPP_URL:
-        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
+    # Кнопка магазина убрана из inline-меню — открываем только через reply-кнопку,
+    # иначе tg.sendData() не работает и заказы не доходят до бота.
     kb.add(InlineKeyboardButton("🔥 Одноразки",  callback_data="cat_Одноразка"))
     kb.add(InlineKeyboardButton("💧 Жидкости",   callback_data="cat_Жидкость"))
     kb.add(InlineKeyboardButton("🚬 Табак",      callback_data="cat_Табак"))

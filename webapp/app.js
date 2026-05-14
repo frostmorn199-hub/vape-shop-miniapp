@@ -32,11 +32,13 @@ const FREE_DELIVERY_THRESHOLD = 2000;
 
 let products   = [];
 let cart       = JSON.parse(localStorage.getItem("vape_cart") || "{}");
+let favorites  = JSON.parse(localStorage.getItem("vape_fav")  || "[]");
 let cardQty    = {};
 let currentCat   = "all";
 let currentBrand = null;
 let currentSearch = "";
 let currentSort   = null;  // null | "asc" | "desc"
+let showFavOnly  = false;
 let loyalty    = {
   total: 0, level: null, discount: 0, next_threshold: 20_000,
   vaypecoins: 0, ref_code: "", ref_count: 0,
@@ -61,10 +63,11 @@ async function init() {
 
   const uid = tg.initDataUnsafe?.user?.id;
 
-  // Загружаем loyalty и products параллельно — вдвое быстрее
-  const [loyaltyResult, productsResult] = await Promise.allSettled([
+  // Загружаем loyalty, products и корзину с сервера параллельно
+  const [loyaltyResult, productsResult, cartResult] = await Promise.allSettled([
     uid ? fetchJSON(`${BASE}/api/loyalty/${uid}`) : Promise.resolve(null),
     fetchJSON(`${BASE}/api/products`),
+    uid ? fetchJSON(`${BASE}/api/cart/${uid}`) : Promise.resolve(null),
   ]);
 
   if (loyaltyResult.status === "fulfilled" && loyaltyResult.value) {
@@ -77,6 +80,15 @@ async function init() {
     products = productsResult.value;
   } else {
     console.warn("products fetch failed", productsResult.reason);
+  }
+
+  // Мержим серверную корзину с локальной (серверная приоритетнее если не пуста)
+  if (cartResult.status === "fulfilled" && cartResult.value &&
+      Object.keys(cartResult.value).length > 0) {
+    const serverCart = {};
+    for (const [k, v] of Object.entries(cartResult.value)) serverCart[+k] = +v;
+    cart = serverCart;
+    saveCart();
   }
 
   updateLoyaltyBar();
@@ -103,20 +115,40 @@ async function retryLoadProducts() {
 
 function buildTabs() {
   const wrap = document.getElementById("tabs");
+  wrap.innerHTML = "";
+
   CATEGORIES.forEach(({ key, label }) => {
     const btn = document.createElement("button");
     btn.className = "tab" + (key === "all" ? " active" : "");
     btn.textContent = label;
     btn.dataset.cat = key;
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll("#tabs .tab").forEach(t => t.classList.remove("active"));
       btn.classList.add("active");
-      currentCat  = key;
+      currentCat   = key;
       currentBrand = null;
+      showFavOnly  = false;
       renderProducts();
     });
     wrap.appendChild(btn);
   });
+
+  // Кнопка «Избранное»
+  const favBtn = document.createElement("button");
+  favBtn.className = "tab fav-tab" + (showFavOnly ? " active" : "");
+  favBtn.id = "fav-tab-btn";
+  favBtn.textContent = "♥ Избранное";
+  favBtn.addEventListener("click", () => {
+    showFavOnly = !showFavOnly;
+    document.querySelectorAll("#tabs .tab").forEach(t => t.classList.remove("active"));
+    favBtn.classList.toggle("active", showFavOnly);
+    if (!showFavOnly) {
+      document.querySelector(`#tabs .tab[data-cat="${currentCat}"]`)?.classList.add("active");
+    }
+    currentBrand = null;
+    renderProducts();
+  });
+  wrap.appendChild(favBtn);
 }
 
 
@@ -337,10 +369,11 @@ function shareRefCode() {
 
 function normalizePhotoUrl(url) {
   if (!url) return "";
+  // Извлекаем file_id из Google Drive ссылки и используем серверный прокси
   const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w500-h500`;
+  if (m) return `${BASE}/api/photo/${m[1]}`;
   const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2 && url.includes("drive.google.com")) return `https://drive.google.com/thumbnail?id=${m2[1]}&sz=w500-h500`;
+  if (m2 && url.includes("drive.google.com")) return `${BASE}/api/photo/${m2[1]}`;
   return url;
 }
 
@@ -367,10 +400,11 @@ function renderProducts() {
   buildBrandBar(currentCat);
   const grid = document.getElementById("products-grid");
 
-  let list = currentCat === "all"
-    ? products
-    : products.filter(p => p["Категория"] === currentCat);
-  if (currentBrand) list = list.filter(p => p["Бренд"] === currentBrand);
+  let list = showFavOnly
+    ? products.filter(p => favorites.includes(p["ID"]))
+    : (currentCat === "all" ? products : products.filter(p => p["Категория"] === currentCat));
+
+  if (!showFavOnly && currentBrand) list = list.filter(p => p["Бренд"] === currentBrand);
 
   // Поиск
   if (currentSearch) {
@@ -385,10 +419,13 @@ function renderProducts() {
   if (currentSort === "desc") list = [...list].sort((a, b) => b["Цена (₽)"] - a["Цена (₽)"]);
 
   if (!list.length) {
-    // Если products вообще не загружены — показываем retry
-    grid.innerHTML = products.length === 0
-      ? '<div class="placeholder">Не удалось загрузить товары 😔<br><button class="retry-btn" onclick="retryLoadProducts()">🔄 Повторить</button></div>'
-      : '<div class="placeholder">Товаров нет 🤷</div>';
+    if (showFavOnly) {
+      grid.innerHTML = '<div class="placeholder">Нет избранных товаров 💔<br><small style="color:var(--hint)">Нажми ♥ на карточке товара</small></div>';
+    } else {
+      grid.innerHTML = products.length === 0
+        ? '<div class="placeholder">Не удалось загрузить товары 😔<br><button class="retry-btn" onclick="retryLoadProducts()">🔄 Повторить</button></div>'
+        : '<div class="placeholder">Товаров нет 🤷</div>';
+    }
     return;
   }
 
@@ -397,9 +434,16 @@ function renderProducts() {
     const stock = p["Остаток"] || 0;
     const qty   = Math.min(cardQty[id] || 1, stock);
     const photo = normalizePhotoUrl(p["Фото"] || "");
+    const isFav = favorites.includes(id);
     const imgHtml = photo
-      ? `<div class="p-img-wrap"><img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23888%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2212%22>нет фото</text></svg>'"></div>`
-      : "";
+      ? `<div class="p-img-wrap">
+           <img class="p-img" src="${photo}" alt="${p["Название"]}" loading="lazy"
+             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23888%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2212%22>нет фото</text></svg>'">
+           <button class="fav-btn ${isFav ? "faved" : ""}" onclick="toggleFav(${id})" id="favbtn-${id}">♥</button>
+         </div>`
+      : `<div class="p-img-wrap no-img">
+           <button class="fav-btn ${isFav ? "faved" : ""}" onclick="toggleFav(${id})" id="favbtn-${id}">♥</button>
+         </div>`;
     const isVC = p["Категория"] === "Товары VC";
     return `
       <div class="product-card">
@@ -407,7 +451,7 @@ function renderProducts() {
         <div class="p-name">${p["Название"]}</div>
         <div class="p-brand">${p["Бренд"]}${p["Затяжки"] ? " · " + p["Затяжки"] + " тяг" : ""}</div>
         <div class="p-price">${isVC ? `<span class="vc-price">🪙 ${p["Цена (₽)"].toLocaleString("ru")} VC</span>` : `${p["Цена (₽)"].toLocaleString("ru")}₽`}</div>
-        <div class="p-stock" style="color:${stock <= 3 ? '#e74c3c' : 'var(--hint)'}">Остаток: ${stock} шт</div>
+        <div class="p-stock" style="color:${stock <= 3 ? "#e74c3c" : "var(--hint)"}">Остаток: ${stock} шт</div>
         <div class="p-actions">
           <button class="qty-btn" onclick="changeCardQty(${id},-1)">−</button>
           <span class="qty-val" id="cqty-${id}">${qty}</span>
@@ -416,6 +460,19 @@ function renderProducts() {
         </div>
       </div>`;
   }).join("");
+}
+
+function toggleFav(id) {
+  const idx = favorites.indexOf(id);
+  if (idx === -1) favorites.push(id);
+  else favorites.splice(idx, 1);
+  localStorage.setItem("vape_fav", JSON.stringify(favorites));
+  // Обновляем только кнопку без перерисовки всего списка
+  const btn = document.getElementById(`favbtn-${id}`);
+  if (btn) btn.classList.toggle("faved", favorites.includes(id));
+  // Обновляем счётчик на вкладке «Избранное»
+  const favTab = document.getElementById("fav-tab-btn");
+  if (favTab && showFavOnly && idx !== -1) renderProducts(); // удалили из избранного — обновляем список
 }
 
 function changeCardQty(id, delta) {
@@ -450,14 +507,33 @@ function addToCart(id) {
   }
 }
 
-function saveCart() { localStorage.setItem("vape_cart", JSON.stringify(cart)); }
+function saveCart() {
+  localStorage.setItem("vape_cart", JSON.stringify(cart));
+  const uid = tg.initDataUnsafe?.user?.id;
+  if (uid) {
+    fetch(`${BASE}/api/cart/${uid}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cart),
+    }).catch(() => {});
+  }
+}
 
 function updateFab() {
-  const total = Object.values(cart).reduce((a, b) => a + b, 0);
+  const count = Object.values(cart).reduce((a, b) => a + b, 0);
+  const price = products
+    .filter(p => cart[p["ID"]] > 0)
+    .reduce((s, p) => s + p["Цена (₽)"] * (cart[p["ID"]] || 0), 0);
+
   const badge = document.getElementById("nav-cart-count");
   if (badge) {
-    badge.textContent = total;
-    badge.classList.toggle("hidden", total === 0);
+    badge.textContent = count;
+    badge.classList.toggle("hidden", count === 0);
+  }
+  const priceEl = document.getElementById("nav-cart-price");
+  if (priceEl) {
+    priceEl.textContent = count > 0 ? `${price.toLocaleString("ru")}₽` : "";
+    priceEl.classList.toggle("hidden", count === 0);
   }
 }
 
@@ -674,8 +750,32 @@ function submitOrder() {
   // Обновляем достижения
   updateAchievements(finalTotal);
 
+  // Показываем экран успеха
+  const disc      = loyalty.discount || 0;
+  const wheelDisc = loyalty.wheel_discount || 0;
+  const totalDisc = disc + wheelDisc;
+  let rawTotal = 0;
+  inCart.forEach(p => { rawTotal += p["Цена (₽)"] * (cart[p["ID"]] || 0); });
+  const discSum    = Math.round(rawTotal * totalDisc / 100);
+  let itemsTotal   = rawTotal - discSum;
+  const delivFee   = delivery === "courier" && itemsTotal < FREE_DELIVERY_THRESHOLD ? DELIVERY_FEE : 0;
+  const finalTotal = itemsTotal + delivFee;
+
+  const successLines = inCart.map(p =>
+    `${p["Название"]} × ${cart[p["ID"]]} = ${(p["Цена (₽)"] * cart[p["ID"]]).toLocaleString("ru")}₽`
+  ).join("<br>");
+  let successHtml = `<div class="success-lines">${successLines}</div>`;
+  if (totalDisc > 0) successHtml += `<div class="success-disc">🎁 Скидка ${totalDisc}%: −${(rawTotal - itemsTotal).toLocaleString("ru")}₽</div>`;
+  if (delivFee > 0)  successHtml += `<div class="success-disc">🚚 Доставка: +${delivFee.toLocaleString("ru")}₽</div>`;
+  successHtml += `<div class="success-total">✅ Итого: ${finalTotal.toLocaleString("ru")}₽</div>`;
+  const successSummaryEl = document.getElementById("success-order-summary");
+  if (successSummaryEl) successSummaryEl.innerHTML = successHtml;
+
   cart = {};
   saveCart();
+
+  showScreen("success", null);
+  tg.MainButton.hide();
 
   tg.sendData(JSON.stringify({ contact, delivery, address, pay, items, comment, vcoin_total: vct }));
 }
@@ -683,27 +783,55 @@ function submitOrder() {
 
 // ── ИСТОРИЯ ЗАКАЗОВ ──────────────────────────────────────────
 
-function renderHistory() {
+async function renderHistory() {
   const el = document.getElementById("history-list");
   if (!el) return;
-  const hist = JSON.parse(localStorage.getItem("vape_orders") || "[]");
-  if (!hist.length) {
+
+  el.innerHTML = '<div class="placeholder">Загружаем историю…</div>';
+
+  const uid = tg.initDataUnsafe?.user?.id;
+  let orders = [];
+
+  if (uid) {
+    try {
+      orders = await fetchJSON(`${BASE}/api/orders/${uid}`, 10000);
+    } catch (e) {
+      console.warn("orders fetch failed, using localStorage", e);
+    }
+  }
+
+  // Fallback: localStorage
+  if (!orders.length) {
+    const hist = JSON.parse(localStorage.getItem("vape_orders") || "[]");
+    orders = hist.map((h, i) => ({
+      id:     `#${hist.length - i}`,
+      date:   h.date,
+      total:  h.total || 0,
+      status: "✅ Выдан",
+      items:  h.items,
+      type:   h.delivery === "courier" ? "Доставка" : "Самовывоз",
+      pay:    h.pay,
+    }));
+  }
+
+  if (!orders.length) {
     el.innerHTML = '<div class="placeholder">История пуста 📭<br><small style="color:var(--hint)">Оформи первый заказ!</small></div>';
     return;
   }
-  el.innerHTML = hist.map((h, i) => `
+
+  el.innerHTML = orders.map((h, i) => `
     <div class="history-card">
       <div class="hc-header">
-        <span class="hc-num">#${hist.length - i}</span>
+        <span class="hc-num">#${orders.length - i}</span>
         <span class="hc-date">${h.date}</span>
       </div>
-      <div class="hc-items">${h.items}</div>
+      <div class="hc-items">${(h.items || "").replace(/\n/g, "<br>")}</div>
       <div class="hc-footer">
-        <span class="hc-type">${h.delivery === "courier" ? "🚚 Доставка" : "🚶 Самовывоз"}</span>
-        <span class="hc-pay">${h.pay}</span>
+        <span class="hc-type">${h.type === "Доставка" ? "🚚 Доставка" : "🚶 Самовывоз"}</span>
+        <span class="hc-pay">${h.pay || ""}</span>
         <span class="hc-total">${(h.total || 0).toLocaleString("ru")}₽</span>
       </div>
-      ${h.discountPct > 0 ? `<div class="hc-disc">🎁 Скидка ${h.discountPct}% применена</div>` : ""}
+      <div class="hc-status">${h.status || ""}</div>
     </div>`).join("");
 }
 
@@ -794,7 +922,7 @@ function showScreen(name, navBtn) {
   if (name === "history")  renderHistory();
 
   // Управление главной кнопкой TG
-  if (name === "catalog" || name === "loyalty" || name === "history") {
+  if (name === "catalog" || name === "loyalty" || name === "history" || name === "success") {
     tg.MainButton.hide();
   } else if (name === "cart") {
     tg.MainButton.setText("Оформить заказ");

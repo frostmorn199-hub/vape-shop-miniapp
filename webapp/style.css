@@ -459,3 +459,75 @@ body {
 
 /* ── UTILS ───────────────────────────────── */
 .hidden { display: none !important; }
+
+/* ── FAVORITES BUTTON ───────────────────── */
+.p-img-wrap { position: relative; }
+.p-img-wrap.no-img {
+  width: 100%; aspect-ratio: 1/1; overflow: hidden;
+  border-radius: calc(var(--radius) - 2px);
+  margin-bottom: 6px; background: rgba(255,255,255,0.04);
+  display: flex; align-items: flex-end; justify-content: flex-end;
+  padding: 6px;
+}
+.fav-btn {
+  position: absolute; bottom: 8px; right: 8px;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: rgba(0,0,0,0.55); border: none;
+  color: rgba(255,255,255,0.4); font-size: 15px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: color .15s, background .15s;
+  z-index: 2;
+}
+.fav-btn.faved { color: #e74c3c; background: rgba(0,0,0,0.7); }
+.fav-tab { border-color: rgba(231,76,60,0.4) !important; }
+.fav-tab.active { background: #e74c3c !important; color: #fff !important; border-color: #e74c3c !important; }
+
+/* ── CART PRICE IN NAV ───────────────────── */
+.nav-cart-price {
+  display: block;
+  font-size: 10px; font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  margin-top: 1px;
+}
+
+/* ── ORDER STATUS IN HISTORY ─────────────── */
+.hc-status {
+  font-size: 11px; font-weight: 600; color: #27ae60;
+  margin-top: 4px;
+}
+
+/* ── SUCCESS SCREEN ──────────────────────── */
+#screen-success .success-body {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 14px;
+  padding: 40px 24px;
+  min-height: 70vh;
+  text-align: center;
+}
+.success-icon  { font-size: 64px; animation: bounce .6s ease; }
+.success-title { font-size: 24px; font-weight: 800; }
+.success-subtitle { font-size: 14px; color: var(--hint); max-width: 280px; line-height: 1.5; }
+.success-summary {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+  font-size: 13px; color: var(--text); text-align: left; width: 100%;
+  max-width: 360px; line-height: 1.6;
+}
+.success-lines  { margin-bottom: 8px; }
+.success-disc   { color: #f0c040; font-size: 12px; }
+.success-total  { font-size: 15px; font-weight: 800; margin-top: 6px; }
+.success-catalog-btn, .success-history-btn {
+  width: 100%; max-width: 320px;
+}
+.btn-secondary {
+  width: 100%; padding: 14px; border-radius: var(--radius);
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text); font-size: 15px; font-weight: 700;
+  cursor: pointer;
+}
+@keyframes bounce {
+  0%   { transform: scale(.5); opacity: 0; }
+  70%  { transform: scale(1.1); }
+  100% { transform: scale(1);   opacity: 1; }
+}

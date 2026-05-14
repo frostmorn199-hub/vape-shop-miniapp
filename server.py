@@ -40,6 +40,8 @@ CORS(app)
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
+DEBUG_TOKEN = os.environ.get("DEBUG_TOKEN", "")
+
 CREDS_JSON_ENV = os.environ.get("GOOGLE_CREDS_JSON")
 if CREDS_JSON_ENV:
     creds_dict = json.loads(CREDS_JSON_ENV)
@@ -56,10 +58,52 @@ spreadsheet = client.open("VAPE SHOP")
 products_ws  = spreadsheet.worksheet("Товары")
 clients_ws   = spreadsheet.worksheet("Клиенты")
 
+def _reauth():
+    """Переавторизует gspread и обновляет глобальные объекты листов."""
+    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws
+    logging.warning("gspread re-auth triggered")
+    try:
+        creds.refresh(None)
+    except Exception:
+        pass
+    client       = gspread.authorize(creds)
+    spreadsheet  = client.open("VAPE SHOP")
+    products_ws  = spreadsheet.worksheet("Товары")
+    clients_ws   = spreadsheet.worksheet("Клиенты")
+    try:
+        referrals_ws = spreadsheet.worksheet("Рефералы")
+    except Exception:
+        referrals_ws = None
+    try:
+        promos_ws = spreadsheet.worksheet("Промокоды_колесо")
+    except Exception:
+        promos_ws = None
+    try:
+        orders_ws = spreadsheet.worksheet("Заказы")
+    except Exception:
+        orders_ws = None
+    logging.info("gspread re-auth done")
+
+def _gs_call(fn, *args, **kwargs):
+    """Вызывает fn(*args, **kwargs); при APIError/TransportError — переавторизует и повторяет."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        err = str(e).lower()
+        if any(k in err for k in ("401", "invalid_grant", "token", "transport", "connection")):
+            _reauth()
+            return fn(*args, **kwargs)
+        raise
+
 try:
     referrals_ws = spreadsheet.worksheet("Рефералы")
 except Exception:
     referrals_ws = None
+
+try:
+    orders_ws = spreadsheet.worksheet("Заказы")
+except Exception:
+    orders_ws = None
 
 try:
     promos_ws = spreadsheet.worksheet("Промокоды_колесо")
@@ -117,7 +161,7 @@ def get_products():
     if cached is not None:
         return jsonify(cached)
     try:
-        data = products_ws.get_all_records()
+        data = _gs_call(products_ws.get_all_records)
         # int(...or 0) защищает от пустой строки "" возвращаемой gspread для пустых ячеек
         result = [p for p in data if int(p.get("Остаток", 0) or 0) > 0]
         _cache_set("products", result)
@@ -134,15 +178,18 @@ def clear_cache():
 
 @app.route("/api/debug/<int:uid>")
 def debug_user(uid: int):
-    """Временный эндпоинт для диагностики."""
+    """Диагностика пользователя — защищён токеном (?token=DEBUG_TOKEN)."""
+    token = request.args.get("token", "")
+    if not DEBUG_TOKEN or token != DEBUG_TOKEN:
+        return jsonify({"error": "unauthorized"}), 403
     try:
-        records = clients_ws.get_all_records()
-        headers = clients_ws.row_values(1)
+        records = _gs_call(clients_ws.get_all_records)
+        headers = _gs_call(clients_ws.row_values, 1)
         matches = []
         for idx, r in enumerate(records):
             try:
                 if int(r.get("ID", 0) or 0) == uid:
-                    row_vals = clients_ws.row_values(idx + 2)
+                    row_vals = _gs_call(clients_ws.row_values, idx + 2)
                     matches.append({"row": idx + 2, "dict": r, "raw": row_vals})
             except Exception:
                 continue
@@ -162,7 +209,7 @@ def get_user_loyalty(uid: int):
     if cached is not None:
         return jsonify(cached)
     try:
-        records = clients_ws.get_all_records()
+        records = _gs_call(clients_ws.get_all_records)
         for rec_idx, r in enumerate(records):
             try:
                 row_uid = int(r.get("ID", 0) or 0)
@@ -182,7 +229,7 @@ def get_user_loyalty(uid: int):
                 ref_count = 0
                 if referrals_ws:
                     try:
-                        ref_records = referrals_ws.get_all_records()
+                        ref_records = _gs_call(referrals_ws.get_all_records)
                         ref_count = sum(
                             1 for rr in ref_records
                             if int(rr.get("Пригласивший_ID", 0)) == uid
@@ -198,7 +245,7 @@ def get_user_loyalty(uid: int):
                 # Fallback: читаем вейпкоины напрямую по индексу колонки (col 8 → index 7)
                 if vaypecoins == 0:
                     try:
-                        row_vals = clients_ws.row_values(sheet_row)
+                        row_vals = _gs_call(clients_ws.row_values, sheet_row)
                         if len(row_vals) >= 8:
                             vaypecoins = int(row_vals[7] or 0)
                     except Exception:
@@ -207,7 +254,7 @@ def get_user_loyalty(uid: int):
                 # Fallback: читаем промокод напрямую по индексу колонки (col 6 → index 5)
                 if not ref_code:
                     try:
-                        row_vals = clients_ws.row_values(sheet_row)
+                        row_vals = _gs_call(clients_ws.row_values, sheet_row)
                         if len(row_vals) >= 6:
                             candidate = str(row_vals[5] or "").strip()
                             if len(candidate) >= 4 and candidate.replace("-", "").isalnum():
@@ -229,7 +276,7 @@ def get_user_loyalty(uid: int):
                             )
                             if new_code.upper() not in existing_codes:
                                 break
-                        clients_ws.update_cell(sheet_row, 6, new_code)
+                        _gs_call(clients_ws.update_cell, sheet_row, 6, new_code)
                         ref_code = new_code
                         _cache_del(cache_key)
                         logging.info(f"Auto-generated promo code {new_code} for uid {uid}")
@@ -276,13 +323,14 @@ def register_promo():
             return jsonify({"ok": False, "error": "no code"}), 400
 
         # Проверяем нет ли уже такого кода
-        existing = promos_ws.get_all_records()
+        existing = _gs_call(promos_ws.get_all_records)
         if any(r.get("Код", "").upper() == code for r in existing):
             return jsonify({"ok": False, "error": "already exists"}), 409
 
         from datetime import datetime
-        promos_ws.append_row([code, promo_type, discount, uid, 0,
-                               datetime.now().strftime("%Y-%m-%d %H:%M")])
+        _gs_call(promos_ws.append_row,
+                 [code, promo_type, discount, uid, 0,
+                  datetime.now().strftime("%Y-%m-%d %H:%M")])
         return jsonify({"ok": True})
     except Exception as e:
         logging.error(f"register_promo: {e}")
@@ -320,8 +368,8 @@ def add_coins():
         if vc_earned < 0.01:
             return jsonify({"ok": True, "earned": 0})
 
-        records = clients_ws.get_all_records()
-        headers = clients_ws.row_values(1)
+        records = _gs_call(clients_ws.get_all_records)
+        headers = _gs_call(clients_ws.row_values, 1)
         try:
             vc_col = headers.index("Вейпкоины") + 1
         except ValueError:
@@ -332,7 +380,7 @@ def add_coins():
                 if int(r.get("ID", 0) or 0) == uid:
                     current = float(r.get("Вейпкоины", 0) or 0)
                     new_val = round(current + vc_earned, 2)
-                    clients_ws.update_cell(idx + 2, vc_col, new_val)
+                    _gs_call(clients_ws.update_cell, idx + 2, vc_col, new_val)
                     logging.info(f"add_coins uid={uid} smoke={smoke} +{vc_earned} => {new_val}")
                     _cache_del(f"loyalty:{uid}")
                     return jsonify({"ok": True, "earned": vc_earned, "total": new_val})
@@ -342,6 +390,68 @@ def add_coins():
         return jsonify({"ok": False, "error": "user not found"}), 404
     except Exception as e:
         logging.error(f"add_coins: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── In-memory cart storage (cross-session sync) ──────────────
+_server_carts: dict = {}   # uid → {product_id: qty}
+
+@app.route("/api/orders/<int:uid>")
+def get_user_orders(uid: int):
+    """История заказов пользователя из Google Sheets."""
+    try:
+        if orders_ws is None:
+            return jsonify([])
+        records = _gs_call(orders_ws.get_all_records)
+        user_orders = []
+        for r in records:
+            try:
+                if int(r.get("Покупатель_ID", 0) or 0) == uid:
+                    status_raw = str(r.get("Статус", "") or "").lower()
+                    STATUS_LABELS = {
+                        "pending":   "⏳ Ожидает",
+                        "confirmed": "✅ Подтверждён",
+                        "ready":     "📦 Готов",
+                        "delivered": "🚀 Доставляется",
+                        "done":      "✅ Выдан",
+                        "cancelled": "❌ Отменён",
+                    }
+                    status_label = STATUS_LABELS.get(status_raw, status_raw or "⏳ Ожидает")
+                    user_orders.append({
+                        "id":     r.get("Заказ_ID", ""),
+                        "date":   r.get("Дата", ""),
+                        "total":  int(r.get("Финальная_сумма", 0) or 0),
+                        "status": status_label,
+                        "items":  r.get("Состав", ""),
+                        "type":   r.get("Тип", ""),
+                        "pay":    r.get("Оплата", ""),
+                    })
+            except Exception:
+                continue
+        user_orders.reverse()   # свежие сначала
+        return jsonify(user_orders[:50])
+    except Exception as e:
+        logging.error(f"get_user_orders: {e}")
+        return jsonify([])
+
+
+@app.route("/api/cart/<int:uid>", methods=["GET"])
+def get_cart(uid: int):
+    """Возвращает сохранённую на сервере корзину пользователя."""
+    return jsonify(_server_carts.get(uid, {}))
+
+
+@app.route("/api/cart/<int:uid>", methods=["POST"])
+def save_cart(uid: int):
+    """Сохраняет корзину пользователя (dict product_id → qty)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        # Убираем товары с qty=0
+        clean = {str(k): int(v) for k, v in data.items() if int(v or 0) > 0}
+        _server_carts[uid] = clean
+        return jsonify({"ok": True})
+    except Exception as e:
+        logging.error(f"save_cart: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

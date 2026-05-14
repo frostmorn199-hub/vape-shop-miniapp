@@ -1753,10 +1753,27 @@ async def web_app_order(msg: types.Message):
 
 # ── Запуск ──────────────────────────────────────────────────
 
+async def _keep_server_alive():
+    """Пингует Render.com каждые 5 минут — не даёт бесплатному тиру засыпать."""
+    await asyncio.sleep(90)           # первый пинг через 90 сек после старта
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.get(
+                    f"{SERVER_URL}/api/ping",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                )
+            logging.info("keepalive ping OK")
+        except Exception as e:
+            logging.warning(f"keepalive ping failed: {e}")
+        await asyncio.sleep(270)      # 4.5 мин — укладываемся в 5-мин TTL кэша
+
+
 async def on_startup(dp):
     init_sheets()
     _load_carts()
     _load_notifies()
+    asyncio.create_task(_keep_server_alive())
     await bot.set_my_commands([
         types.BotCommand("start",      "Главное меню"),
         types.BotCommand("app",        "Открыть Mini App"),

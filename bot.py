@@ -790,10 +790,18 @@ def main_menu():
     )
     return kb
 
-def webapp_keyboard():
+def _webapp_url(uid: int) -> str:
+    """Формирует URL мини-апп с UID пользователя в параметре.
+    Это запасной механизм: если Telegram не передаёт initDataUnsafe.user.id
+    (например, Telegram Desktop открывает в браузере), UID берётся из URL.
+    """
+    return f"{WEBAPP_URL}?uid={uid}" if WEBAPP_URL else ""
+
+def webapp_keyboard(uid: int):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    if WEBAPP_URL:
-        kb.add(KeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
+    url = _webapp_url(uid)
+    if url:
+        kb.add(KeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=url)))
     return kb
 
 
@@ -804,7 +812,7 @@ async def start(msg: types.Message, state: FSMContext):
     await state.finish()
     contact = f"@{msg.from_user.username}" if msg.from_user.username else str(msg.from_user.id)
     await _run(ensure_client, msg.from_user.id, contact)
-    await msg.answer("Добро пожаловать в VAPE SHOP VRN 💨\nПриятных покупок 🛒", reply_markup=webapp_keyboard())
+    await msg.answer("Добро пожаловать в VAPE SHOP VRN 💨\nПриятных покупок 🛒", reply_markup=webapp_keyboard(msg.from_user.id))
     await msg.answer("Выбери раздел:", reply_markup=main_menu())
 
 @dp.message_handler(commands=["loyalty"], state="*")
@@ -814,9 +822,10 @@ async def loyalty_cmd(msg: types.Message):
 
 @dp.message_handler(commands=["app"], state="*")
 async def app_cmd(msg: types.Message):
-    if WEBAPP_URL:
+    url = _webapp_url(msg.from_user.id)
+    if url:
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL)))
+        kb.add(InlineKeyboardButton("🌐 Открыть магазин", web_app=WebAppInfo(url=url)))
         await msg.answer("Нажми кнопку, чтобы открыть Mini App:", reply_markup=kb)
     else:
         await msg.answer("Mini App пока недоступен.")

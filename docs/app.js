@@ -49,6 +49,14 @@ let _lastUid = null;
 
 // ── INIT ──────────────────────────────────────────────────────
 
+/** Возвращает Telegram user ID из initData или из URL-параметра ?uid= (запасной путь). */
+function getUid() {
+  const tgUid = tg.initDataUnsafe?.user?.id;
+  if (tgUid) return tgUid;
+  const p = parseInt(new URLSearchParams(window.location.search).get("uid") || "0");
+  return p > 0 ? p : null;
+}
+
 function fetchJSON(url, timeoutMs = 12000) {
   return Promise.race([
     fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
@@ -59,7 +67,7 @@ function fetchJSON(url, timeoutMs = 12000) {
 async function init() {
   buildTabs();
 
-  const uid = tg.initDataUnsafe?.user?.id;
+  const uid = getUid();
   _lastUid = uid || null;
 
   // Пинг для пробуждения Render.com сервера (cold start) — ждём ответа до 40 сек
@@ -306,8 +314,9 @@ function buildLoyaltyScreen() {
       dbgEl.style.cssText = "font-size:11px;color:var(--hint);text-align:center;margin-top:4px;";
       coinsCard.appendChild(dbgEl);
     }
-    const uidNow = tg.initDataUnsafe?.user?.id;
-    dbgEl.innerHTML = `ID: ${uidNow || "<b style='color:#e74c3c'>не определён</b>"} &nbsp;` +
+    const uidNow = getUid();
+    const uidSrc = tg.initDataUnsafe?.user?.id ? "tg" : (uidNow ? "url" : "?");
+    dbgEl.innerHTML = `ID: ${uidNow ? `${uidNow} <span style='color:var(--hint)'>(${uidSrc})</span>` : "<b style='color:#e74c3c'>не определён</b>"} &nbsp;` +
       `<button id="loy-reload-btn" onclick="reloadLoyalty()" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);cursor:pointer;">🔄 Обновить</button>`;
   }
 
@@ -414,10 +423,10 @@ function updateCheckoutVC() {
 }
 
 async function reloadLoyalty() {
-  const uid = tg.initDataUnsafe?.user?.id;
+  const uid = getUid();
   _lastUid = uid || null;
   if (!uid) {
-    tg.showAlert("Не удалось определить Telegram ID. Открой приложение через кнопку в боте.");
+    tg.showAlert("Не удалось определить Telegram ID.\nОтправь боту /start и открой магазин через кнопку «🌐 Открыть магазин».");
     buildLoyaltyScreen();
     return;
   }
@@ -610,7 +619,7 @@ function addToCart(id) {
 
 function saveCart() {
   localStorage.setItem("vape_cart", JSON.stringify(cart));
-  const uid = tg.initDataUnsafe?.user?.id;
+  const uid = getUid();
   if (uid) {
     fetch(`${BASE}/api/cart/${uid}`, {
       method: "POST",
@@ -901,7 +910,7 @@ async function renderHistory() {
 
   el.innerHTML = '<div class="placeholder">Загружаем историю…</div>';
 
-  const uid = tg.initDataUnsafe?.user?.id;
+  const uid = getUid();
   let orders = [];
 
   if (uid) {

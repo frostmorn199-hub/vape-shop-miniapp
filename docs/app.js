@@ -370,11 +370,11 @@ function shareRefCode() {
 
 function normalizePhotoUrl(url) {
   if (!url) return "";
-  // Извлекаем file_id из Google Drive ссылки и используем серверный прокси
+  // Извлекаем file_id из Google Drive ссылки
   const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return `${BASE}/api/photo/${m[1]}`;
+  if (m) return `https://lh3.googleusercontent.com/d/${m[1]}`;
   const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m2 && url.includes("drive.google.com")) return `${BASE}/api/photo/${m2[1]}`;
+  if (m2 && url.includes("drive.google.com")) return `https://lh3.googleusercontent.com/d/${m2[1]}`;
   return url;
 }
 

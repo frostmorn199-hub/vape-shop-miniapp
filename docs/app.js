@@ -779,16 +779,6 @@ function submitOrder() {
   updateAchievements(finalTotal);
 
   // Показываем экран успеха
-  const disc      = loyalty.discount || 0;
-  const wheelDisc = loyalty.wheel_discount || 0;
-  const totalDisc = disc + wheelDisc;
-  let rawTotal = 0;
-  inCart.forEach(p => { rawTotal += p["Цена (₽)"] * (cart[p["ID"]] || 0); });
-  const discSum    = Math.round(rawTotal * totalDisc / 100);
-  let itemsTotal   = rawTotal - discSum;
-  const delivFee   = delivery === "courier" && itemsTotal < FREE_DELIVERY_THRESHOLD ? DELIVERY_FEE : 0;
-  const finalTotal = itemsTotal + delivFee;
-
   const successLines = inCart.map(p =>
     `${p["Название"]} × ${cart[p["ID"]]} = ${(p["Цена (₽)"] * cart[p["ID"]]).toLocaleString("ru")}₽`
   ).join("<br>");

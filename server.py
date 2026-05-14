@@ -123,6 +123,13 @@ REFERRAL_LEVELS = [
     (1,   "Бронза 🥉",   3),
 ]
 
+def _parse_uid(val) -> int:
+    """Парсит Telegram UID из разных форматов: int, float, строки, научная нотация."""
+    try:
+        return int(float(str(val or 0).replace(",", ".")))
+    except (ValueError, TypeError):
+        return 0
+
 def get_loyalty(total: int):
     for threshold, name, discount in LOYALTY_LEVELS:
         if total >= threshold:
@@ -209,7 +216,7 @@ def debug_user(uid: int):
         matches = []
         for idx, r in enumerate(records):
             try:
-                if int(r.get("ID", 0) or 0) == uid:
+                if _parse_uid(r.get("ID", 0)) == uid:
                     row_vals = _gs_call(clients_ws.row_values, idx + 2)
                     matches.append({"row": idx + 2, "dict": r, "raw": row_vals})
             except Exception:
@@ -232,10 +239,7 @@ def get_user_loyalty(uid: int):
     try:
         records = _gs_call(clients_ws.get_all_records)
         for rec_idx, r in enumerate(records):
-            try:
-                row_uid = int(r.get("ID", 0) or 0)
-            except (ValueError, TypeError):
-                continue
+            row_uid = _parse_uid(r.get("ID", 0))
             if row_uid == uid:
                 sheet_row      = rec_idx + 2  # 1-indexed (+ header row)
                 total          = int(r.get("Итого", 0) or 0)
@@ -423,7 +427,7 @@ def add_coins():
 
         for idx, r in enumerate(records):
             try:
-                if int(r.get("ID", 0) or 0) == uid:
+                if _parse_uid(r.get("ID", 0)) == uid:
                     current = float(r.get("Вейпкоины", 0) or 0)
                     new_val = round(current + vc_earned, 2)
                     _gs_call(clients_ws.update_cell, idx + 2, vc_col, new_val)
@@ -452,7 +456,7 @@ def get_user_orders(uid: int):
         user_orders = []
         for r in records:
             try:
-                if int(r.get("Покупатель_ID", 0) or 0) == uid:
+                if _parse_uid(r.get("Покупатель_ID", 0)) == uid:
                     status_raw = str(r.get("Статус", "") or "").lower()
                     STATUS_LABELS = {
                         "pending":   "⏳ Ожидает",

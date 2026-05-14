@@ -44,6 +44,7 @@ let loyalty    = {
   vaypecoins: 0, ref_code: "", ref_count: 0,
   ref_level: null, ref_pct: 0, next_ref_threshold: 1,
 };
+let _lastUid = null;
 
 
 // ── INIT ──────────────────────────────────────────────────────
@@ -58,23 +59,18 @@ function fetchJSON(url, timeoutMs = 12000) {
 async function init() {
   buildTabs();
 
-  // Пинг для пробуждения Render.com сервера (cold start)
-  fetch(`${BASE}/api/ping`).catch(() => {});
-
   const uid = tg.initDataUnsafe?.user?.id;
+  _lastUid = uid || null;
 
-  // Загружаем loyalty, products и корзину с сервера параллельно
-  const [loyaltyResult, productsResult, cartResult] = await Promise.allSettled([
-    uid ? fetchJSON(`${BASE}/api/loyalty/${uid}`) : Promise.resolve(null),
+  // Пинг для пробуждения Render.com сервера (cold start) — ждём ответа до 40 сек
+  // чтобы дать серверу время выйти из спячки (Render free tier)
+  try { await fetchJSON(`${BASE}/api/ping`, 40000); } catch(e) {}
+
+  // Загружаем products и корзину
+  const [productsResult, cartResult] = await Promise.allSettled([
     fetchJSON(`${BASE}/api/products`),
     uid ? fetchJSON(`${BASE}/api/cart/${uid}`) : Promise.resolve(null),
   ]);
-
-  if (loyaltyResult.status === "fulfilled" && loyaltyResult.value) {
-    loyalty = loyaltyResult.value;
-  } else if (loyaltyResult.status === "rejected") {
-    console.warn("loyalty fetch failed", loyaltyResult.reason);
-  }
 
   if (productsResult.status === "fulfilled" && Array.isArray(productsResult.value)) {
     products = productsResult.value;
@@ -91,12 +87,18 @@ async function init() {
     saveCart();
   }
 
-  updateLoyaltyBar();
-  updateCheckoutVC();
   renderProducts();
   updateFab();
-  buildLoyaltyScreen();
-  updateLoyaltyBadge();
+
+  // Загружаем loyalty отдельно с авторетраем (сервер может быть ещё занят)
+  if (uid) {
+    _loadLoyaltyWithRetry(uid);
+  } else {
+    updateLoyaltyBar();
+    updateCheckoutVC();
+    buildLoyaltyScreen();
+    updateLoyaltyBadge();
+  }
 
   // Отправляем накопленные дымки из игры (если сервер был недоступен)
   const pendingSmoke = parseInt(localStorage.getItem("vr_pending_smoke") || "0");
@@ -123,6 +125,31 @@ async function init() {
       const hint = document.getElementById("contact-hint");
       if (hint && inp.value) hint.textContent = "Заполнено из Telegram, можно изменить";
     }
+  }
+}
+
+async function _loadLoyaltyWithRetry(uid, attempt = 0) {
+  const maxAttempts = 4;
+  const delays = [0, 5000, 10000, 20000]; // ждём перед каждой попыткой
+  if (attempt >= maxAttempts) {
+    console.warn("loyalty fetch: all attempts failed");
+    updateLoyaltyBar(); updateCheckoutVC(); buildLoyaltyScreen(); updateLoyaltyBadge();
+    return;
+  }
+  if (delays[attempt] > 0) await new Promise(r => setTimeout(r, delays[attempt]));
+  try {
+    const data = await fetchJSON(`${BASE}/api/loyalty/${uid}`, 25000);
+    if (data && (data.vaypecoins > 0 || data.ref_code || data.total > 0 || data.ref_count > 0)) {
+      // Получили реальные данные
+      loyalty = data;
+    } else if (data) {
+      // Ответ пришёл, но всё нули — может быть новый пользователь, принимаем как есть
+      loyalty = data;
+    }
+    updateLoyaltyBar(); updateCheckoutVC(); buildLoyaltyScreen(); updateLoyaltyBadge();
+  } catch(e) {
+    console.warn(`loyalty attempt ${attempt + 1} failed:`, e.message);
+    _loadLoyaltyWithRetry(uid, attempt + 1);
   }
 }
 
@@ -269,6 +296,21 @@ function buildLoyaltyScreen() {
   // Вейпкоины
   document.getElementById("loy-coins").textContent = `${coins.toLocaleString("ru")} VC`;
 
+  // Debug UID + кнопка обновления
+  const coinsCard = document.querySelector(".coins-card");
+  if (coinsCard) {
+    let dbgEl = document.getElementById("loy-debug-uid");
+    if (!dbgEl) {
+      dbgEl = document.createElement("div");
+      dbgEl.id = "loy-debug-uid";
+      dbgEl.style.cssText = "font-size:11px;color:var(--hint);text-align:center;margin-top:4px;";
+      coinsCard.appendChild(dbgEl);
+    }
+    const uidNow = tg.initDataUnsafe?.user?.id;
+    dbgEl.innerHTML = `ID: ${uidNow || "<b style='color:#e74c3c'>не определён</b>"} &nbsp;` +
+      `<button id="loy-reload-btn" onclick="reloadLoyalty()" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);cursor:pointer;">🔄 Обновить</button>`;
+  }
+
   // Реферальный уровень
   const refLevelEl = document.getElementById("ref-level-name");
   if (loyalty.ref_level) {
@@ -369,6 +411,28 @@ function updateCheckoutVC() {
     const cardRadio = document.querySelector('input[name="pay"][value="card"]');
     if (cardRadio) cardRadio.checked = true;
   }
+}
+
+async function reloadLoyalty() {
+  const uid = tg.initDataUnsafe?.user?.id;
+  _lastUid = uid || null;
+  if (!uid) {
+    tg.showAlert("Не удалось определить Telegram ID. Открой приложение через кнопку в боте.");
+    buildLoyaltyScreen();
+    return;
+  }
+  const btn = document.getElementById("loy-reload-btn");
+  if (btn) { btn.textContent = "⏳ Загрузка..."; btn.disabled = true; }
+  try {
+    const data = await fetchJSON(`${BASE}/api/loyalty/${uid}`, 30000);
+    if (data) { loyalty = data; }
+  } catch(e) {
+    tg.showAlert("Сервер не ответил. Попробуй через минуту — он просыпается.");
+  }
+  buildLoyaltyScreen();
+  updateLoyaltyBar();
+  updateCheckoutVC();
+  updateLoyaltyBadge();
 }
 
 function copyRefCode() {

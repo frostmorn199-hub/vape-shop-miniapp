@@ -60,96 +60,67 @@ clients_ws   = None
 referrals_ws = None
 promos_ws    = None
 orders_ws    = None
+_sheets_ready = False
 
-def _init_sheets():
-    """Первичное подключение к Google Sheets с retry (до 3 попыток при старте)."""
-    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws
-    for attempt in range(3):
-        try:
-            client      = gspread.authorize(creds)
-            spreadsheet = client.open("VAPE SHOP")
-            products_ws = spreadsheet.worksheet("Товары")
-            clients_ws  = spreadsheet.worksheet("Клиенты")
+def _connect_sheets():
+    """Подключиться/переподключиться к Google Sheets. Не бросает исключений."""
+    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws, _sheets_ready
+    try:
+        client      = gspread.authorize(creds)
+        spreadsheet = client.open("VAPE SHOP")
+        products_ws = spreadsheet.worksheet("Товары")
+        clients_ws  = spreadsheet.worksheet("Клиенты")
+        try:    referrals_ws = spreadsheet.worksheet("Рефералы")
+        except Exception: referrals_ws = None
+        try:    orders_ws = spreadsheet.worksheet("Заказы")
+        except Exception: orders_ws = None
+        try:    promos_ws = spreadsheet.worksheet("Промокоды_колесо")
+        except Exception:
             try:
-                referrals_ws = spreadsheet.worksheet("Рефералы")
-            except Exception:
-                referrals_ws = None
-            try:
-                promos_ws = spreadsheet.worksheet("Промокоды_колесо")
-            except Exception:
-                try:
-                    promos_ws = spreadsheet.add_worksheet("Промокоды_колесо", rows=1000, cols=6)
-                    promos_ws.append_row(["Код", "Тип", "Скидка", "UID", "Использован", "Дата"])
-                except Exception:
-                    promos_ws = None
-            try:
-                orders_ws = spreadsheet.worksheet("Заказы")
-            except Exception:
-                orders_ws = None
-            logging.info("gspread connected OK")
-            return
-        except Exception as e:
-            logging.error(f"gspread init attempt {attempt+1}/3: {e}")
-            if attempt < 2:
-                time.sleep(5 * (attempt + 1))
-    logging.critical("gspread init FAILED after 3 attempts — endpoints will return empty data")
+                promos_ws = spreadsheet.add_worksheet("Промокоды_колесо", rows=1000, cols=6)
+                promos_ws.append_row(["Код", "Тип", "Скидка", "UID", "Использован", "Дата"])
+            except Exception: promos_ws = None
+        _sheets_ready = True
+        logging.info("gspread connected OK")
+    except Exception as e:
+        _sheets_ready = False
+        logging.error(f"gspread connect failed: {e}")
 
-_init_sheets()
-
-def _reauth():
-    """Переавторизует gspread и обновляет глобальные объекты листов."""
-    global client, spreadsheet, products_ws, clients_ws, referrals_ws, promos_ws, orders_ws
-    logging.warning("gspread re-auth triggered")
-    try:
-        creds.refresh(None)
-    except Exception:
-        pass
-    client       = gspread.authorize(creds)
-    spreadsheet  = client.open("VAPE SHOP")
-    products_ws  = spreadsheet.worksheet("Товары")
-    clients_ws   = spreadsheet.worksheet("Клиенты")
-    try:
-        referrals_ws = spreadsheet.worksheet("Рефералы")
-    except Exception:
-        referrals_ws = None
-    try:
-        promos_ws = spreadsheet.worksheet("Промокоды_колесо")
-    except Exception:
-        promos_ws = None
-    try:
-        orders_ws = spreadsheet.worksheet("Заказы")
-    except Exception:
-        orders_ws = None
-    logging.info("gspread re-auth done")
+# Запускаем подключение в фоновом потоке — сервер стартует мгновенно
+import threading
+threading.Thread(target=_connect_sheets, daemon=True).start()
 
 def _gs_call(fn, *args, **kwargs):
     """Вызывает fn(*args, **kwargs).
-    - При 401/auth-ошибке — переавторизует и повторяет один раз.
-    - При 429 (rate limit) — ждёт с экспоненциальным backoff (до 3 попыток).
-    - Если sheets не инициализированы (старт упал) — пробует _init_sheets().
+    - Если sheets ещё не готовы — ждёт подключения (до 15 сек).
+    - При 401/auth-ошибке — переподключается и повторяет.
+    - При 429 — exponential backoff (до 3 попыток).
     """
-    if products_ws is None:
-        logging.warning("_gs_call: sheets not ready, trying _init_sheets()")
-        _init_sheets()
+    global _sheets_ready
+    if not _sheets_ready:
+        for _ in range(15):
+            time.sleep(1)
+            if _sheets_ready:
+                break
+        if not _sheets_ready:
+            _connect_sheets()
     max_retries = 3
-    delay = 5  # секунд
+    delay = 5
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
             err = str(e).lower()
             if any(k in err for k in ("401", "invalid_grant", "token", "transport", "connection")):
-                _reauth()
+                _connect_sheets()
                 return fn(*args, **kwargs)
             if "429" in err or "quota" in err or "rate" in err:
                 if attempt < max_retries - 1:
                     wait = delay * (2 ** attempt)
-                    logging.warning(f"gspread 429 rate limit, retry {attempt+1}/{max_retries-1} after {wait}s")
+                    logging.warning(f"gspread 429, retry {attempt+1} after {wait}s")
                     time.sleep(wait)
                     continue
             raise
-
-# Листы инициализируются в _init_sheets() выше
 
 LOYALTY_LEVELS = [
     (300_000, "Платина 💎", 15),
